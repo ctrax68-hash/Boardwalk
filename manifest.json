@@ -1,0 +1,80 @@
+{
+  "name": "Boardwalk Finance",
+  "short_name": "Boardwalk",
+  "description": "Rise with the Tide — Personal finance app for tracking budgets, transactions, and goals.",
+  "start_url": "/Boardwalk/",
+  "scope": "/Boardwalk/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#003049",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/Boardwalk/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/Boardwalk/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/Boardwalk/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/Boardwalk/maskable-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["finance", "productivity"],
+  "screenshots": [
+    {
+      "src": "/Boardwalk/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "wide"
+    },
+    {
+      "src": "/Boardwalk/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "narrow"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Transaction",
+      "short_name": "Transaction",
+      "description": "Quickly add a new transaction",
+      "url": "/Boardwalk/?action=add-tx",
+      "icons": [
+        {
+          "src": "/Boardwalk/android-chrome-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "View Budgets",
+      "short_name": "Budgets",
+      "description": "View your monthly budgets",
+      "url": "/Boardwalk/?action=view-budgets",
+      "icons": [
+        {
+          "src": "/Boardwalk/android-chrome-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ]
+}
