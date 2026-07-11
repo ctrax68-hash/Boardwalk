@@ -9473,7 +9473,7 @@ if(raf)cancelAnimationFrame(raf);
 <div id="an-cat-ov" role="dialog" aria-modal="true" aria-label="Category details" onclick="if(event.target===this)closeAnCatDetail()"></div>
 
 
-<div id="an-merch-ov" role="dialog" aria-modal="true" aria-label="Merchant details" onclick="if(event.target===this)document.getElementById('an-merch-ov').classList.remove('open')"></div>
+<div id="an-merch-ov" role="dialog" aria-modal="true" aria-label="Merchant details" onclick="if(event.target===this){disableScrollLock();document.getElementById('an-merch-ov').classList.remove('open')}"></div>
 
 
 <div id="catpicker-ov" role="dialog" aria-modal="true" aria-label="Pick a category" onclick="if(event.target===this)catPickerClose()">
@@ -11249,7 +11249,7 @@ if(raf)cancelAnimationFrame(raf);
 <div id="bi-overlay" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;overflow-y:auto;padding:16px 16px calc(var(--nav) + 20px);">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
     <div style="font-weight:800;font-size:var(--fs-cat-title);">Import Budget Template</div>
-    <button onclick="document.getElementById('bi-overlay').style.display='none'" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--sub);">&#215;</button>
+    <button onclick="disableScrollLock();document.getElementById('bi-overlay').style.display='none'" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--sub);">&#215;</button>
   </div>
   <div id="bi-wizard">
     <div id="bi-step-1">
@@ -11436,7 +11436,7 @@ if(raf)cancelAnimationFrame(raf);
   <div style="background:var(--card);border-radius:var(--r-xl) var(--r-xl) 0 0;padding:22px 18px calc(var(--nav) + 24px);width:100%;max-width:430px;animation:sup .28s cubic-bezier(.34,1.2,.64,1);max-height:88dvh;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;">
     <div class="mhdr">
       <span class="mttl" id="bmod-title">Edit Budget</span>
-      <button class="mcls" onclick="document.getElementById('bov').style.display='none'">&#215;</button>
+      <button class="mcls" onclick="disableScrollLock();document.getElementById('bov').style.display='none'">&#215;</button>
     </div>
     <div style="margin-bottom:12px">
       <div style="font-size:13px;font-weight:600;color:var(--sub);margin-bottom:6px">CATEGORY</div>
@@ -11455,7 +11455,7 @@ if(raf)cancelAnimationFrame(raf);
   <div style="background:var(--card);border-radius:var(--r-xl) var(--r-xl) 0 0;padding:22px 18px calc(var(--nav) + 24px);width:100%;max-width:430px;animation:sup .28s cubic-bezier(.34,1.2,.64,1);max-height:88dvh;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;">
     <div class="mhdr">
       <span class="mttl" id="rmod-title">New Recurring Rule</span>
-      <button class="mcls" onclick="document.getElementById('rov').style.display='none'">&#215;</button>
+      <button class="mcls" onclick="disableScrollLock();document.getElementById('rov').style.display='none'">&#215;</button>
     </div>
     <div class="ttog">
       <button class="ttbtn ae" id="rmod-bill" onclick="setRType('bill')">&#128184; Bill</button>
@@ -11491,7 +11491,7 @@ if(raf)cancelAnimationFrame(raf);
   <div style="background:var(--card);border-radius:var(--r-xl) var(--r-xl) 0 0;padding:22px 18px calc(var(--nav) + 24px);width:100%;max-width:430px;animation:sup .28s cubic-bezier(.34,1.2,.64,1);max-height:88dvh;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;">
     <div class="mhdr">
       <span class="mttl" id="gmod-title">Edit Goal</span>
-      <button class="mcls" onclick="document.getElementById('gov').style.display='none'">&#215;</button>
+      <button class="mcls" onclick="disableScrollLock();document.getElementById('gov').style.display='none'">&#215;</button>
     </div>
     
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
@@ -14300,6 +14300,15 @@ return;
 }
 _gpBusy = true;
 try{
+if(typeof _modalOpenCount !== 'undefined' && _modalOpenCount > 0){
+dbg('[SCROLLLOCK] Stale modal lock detected on nav to '+name+' (count='+_modalOpenCount+') — force-clearing');
+_modalOpenCount = 0;
+document.body.style.overflow = '';
+document.body.style.position = '';
+document.body.style.width = '';
+document.body.style.height = '';
+document.body.style.top = '';
+}
 checkMonthRollover();
 _routerState.currentPage = name;
 _routerState.lastNavTime = Date.now();
@@ -17942,6 +17951,7 @@ g.contributions=g.contributions||[];
 g.contributions.push(contrib);
 g.saved=Math.min(g.saved+amt,g.target);
 saveGoalToDB(g);
+disableScrollLock();
 document.getElementById('gov').style.display='none';
 rGoals();toast('+'+fmt(amt)+' contributed!');
 if(typeof updateMilestones === 'function') updateMilestones(g.id);
@@ -18292,6 +18302,7 @@ return r.id !== rule.id &&
 if(_otherBillCount > 0) {
 // Save this rule first, then close sheet, then show modal
 saveMeta();
+disableScrollLock();
 document.getElementById('rov').style.display='none';
 showBulkBillCatModal(
 _billNorm,
@@ -18320,6 +18331,7 @@ rememberBillVendor(_billNorm, newCat);
 }
 
 saveMeta();
+disableScrollLock();
 document.getElementById('rov').style.display='none';
 rRecurring();
 toast(_recurEditId?'Rule updated!':'Rule created!');
@@ -18330,6 +18342,7 @@ if(!delId)return;
 if(!confirm('Delete this recurring rule?'))return;
 AppState.recurRules=AppState.recurRules.filter(function(r){return r.id!==delId;});
 saveMeta();
+disableScrollLock();
 document.getElementById('rov').style.display='none';
 rRecurring();toast('Rule deleted');
 }
@@ -18436,16 +18449,16 @@ if(wizard) wizard.innerHTML =
 +'<div style="font-size:42px;margin-bottom:var(--md)">'+(ok?'&#9989;':'&#10060;')+'</div>'
 +'<div style="font-size:var(--fs-cat-title);font-weight:800;color:'+(ok?'var(--em)':'var(--red)')+';margin-bottom:var(--sm)">'+(ok?'Success':'Import Error')+'</div>'
 +'<div style="font-size:var(--fs-subtext);color:var(--sub);margin-bottom:var(--lg)">'+msg+'</div>'
-+'<button class="sbtn" onclick="document.getElementById(\'bi-overlay\').style.display=\'none\'">Close</button>'
++'<button class="sbtn" onclick="disableScrollLock();document.getElementById(\'bi-overlay\').style.display=\'none\'">Close</button>'
 +'</div>';
 var el = document.getElementById('bimsg');
 if(el){ el.style.display='block'; el.style.background=ok?'var(--embg)':'var(--redbg)'; el.style.color=ok?'var(--em)':'var(--red)'; el.innerHTML=msg; }
 }
 function budgetImportStep1(event) {
-enableScrollLock();
 dbg('budgetImportStep1 fired');
 var file = event.target.files[0];
 if (!file) { dbg('no file selected'); return; }
+enableScrollLock();
 dbg('file: ' + file.name);
 var overlay = document.getElementById('bi-overlay');
 var wizard  = document.getElementById('bi-wizard');
@@ -18916,8 +18929,8 @@ return '<div style="display:flex;align-items:center;justify-content:space-betwee
 }).join('')+'</div>'
 : ''
 )
-+'<button class="sbtn" style="font-size:var(--fs-row-label);" onclick="document.getElementById(\'bi-overlay\').style.display=\'none\';gp(\'Budget\',null);">&#128203; View My Budget &#8594;</button>'
-+'<button onclick="document.getElementById(\'bi-overlay\').style.display=\'none\';" style="width:100%;margin-top:var(--sm);padding:12px;background:none;border:none;font-size:var(--fs-subtext);color:var(--sub);cursor:pointer;font-family:inherit;">Close</button>';
++'<button class="sbtn" style="font-size:var(--fs-row-label);" onclick="disableScrollLock();document.getElementById(\'bi-overlay\').style.display=\'none\';gp(\'Budget\',null);">&#128203; View My Budget &#8594;</button>'
++'<button onclick="disableScrollLock();document.getElementById(\'bi-overlay\').style.display=\'none\';" style="width:100%;margin-top:var(--sm);padding:12px;background:none;border:none;font-size:var(--fs-subtext);color:var(--sub);cursor:pointer;font-family:inherit;">Close</button>';
 var overlayHeader = document.querySelector('#bi-overlay > div:first-child > div:first-child');
 if(overlayHeader) overlayHeader.innerHTML = '&#9989; Import Complete';
 var wizard = document.getElementById('bi-wizard');
@@ -18990,6 +19003,7 @@ AppState.budgets = newBudgets;
 AppState.budgetItems = newBudgetItems;
 saveMeta();
 window._budgetReviewGroups = null;
+disableScrollLock();
 document.getElementById('bi-overlay').style.display = 'none';
 gp('Budget', null);
 toast('Imported ' + applied + ' categories — all 12 months loaded');
@@ -41454,7 +41468,7 @@ Object.keys(AppState.budgets||{}).length > 0;  // budgets always migrate
 return hasPending;
 },
 _showStatus: function(msg, pct) {
-enableScrollLock();
+if(!migrationEngine._locked) { enableScrollLock(); migrationEngine._locked = true; }
 var ov  = document.getElementById('migration-status');
 var txt = document.getElementById('mig-status-txt');
 var bar = document.getElementById('mig-progress-fill');
@@ -41463,7 +41477,7 @@ if(txt) txt.textContent = msg || 'Uploading your data…';
 if(bar) bar.style.width = (pct || 0)+'%';
 },
 _hideStatus: function() {
-disableScrollLock();
+if(migrationEngine._locked) { disableScrollLock(); migrationEngine._locked = false; }
 var ov = document.getElementById('migration-status');
 if(ov) ov.classList.remove('open');
 },
