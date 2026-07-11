@@ -6216,7 +6216,7 @@ var contrib={id:String(Date.now()),amount:amt,date:new Date().toISOString().spli
 g.contributions=g.contributions||[];
 g.contributions.push(contrib);
 g.saved=Math.min(g.saved+amt,g.target);
-saveGoalToDB(g);rGoals();toast('+'+fmt(amt)+' added to '+g.name+'!');
+saveGoalToDB(g);rGoals();toast('+'+fmt(amt)+' added to '+esc(g.name)+'!');
 if(typeof updateMilestones === 'function') updateMilestones(g.id);
 }
 var _goalModalId = null;
@@ -15569,7 +15569,7 @@ var contrib={id:String(Date.now()),amount:amt,date:new Date().toISOString().spli
 g.contributions=g.contributions||[];g.contributions.push(contrib);
 g.saved=Math.round(((g.saved||0)+amt)*100)/100;
 AppState.transactions.unshift({id:'gtx_'+contrib.id,type:'expense',amount:amt,category:'Savings',merchantRaw:'Goal: '+g.name,merchantNorm:'Goal Contribution',merchant:'Goal Contribution',note:g.name,date:contrib.date,mk:contrib.date.slice(0,7),sig:contrib.date+'_'+amt+'_GOALCONTRIB'});
-saveGoalToDB(g);lsSave();rGoals();toast('\u2728 +'+fmt(amt)+' added to '+g.name+'!');
+saveGoalToDB(g);lsSave();rGoals();toast('\u2728 +'+fmt(amt)+' added to '+esc(g.name)+'!');
 if(typeof checkGoalCelebrations==='function') checkGoalCelebrations(id);
 }
 function delGoal(id){
@@ -15665,7 +15665,7 @@ var today=getTodayStr();rule.lastPaid=today;
 if(rule.nextDue){var newNextDue=calcNextDue(rule.nextDue,rule.freq);if(newNextDue)rule.nextDue=newNextDue;}
 rule.payHistory=rule.payHistory||[];rule.payHistory.push({date:today,amount:rule.amount});
 AppState.transactions.unshift({id:'bill_'+Date.now(),type:'expense',amount:rule.amount,category:rule.category||'Bills',merchantRaw:rule.name,merchantNorm:rule.name,merchant:rule.name,note:'Bill payment',date:today,mk:today.slice(0,7),sig:today+'_'+rule.amount+'_BILL_'+rule.id});
-saveMeta();lsSave();rRecurring();toast('&#10003; '+rule.name+' marked as paid!');
+saveMeta();lsSave();rRecurring();toast('&#10003; '+esc(rule.name)+' marked as paid!');
 var card=document.querySelector('[data-bill-id="'+id+'"]');if(card){card.classList.remove('paid-flash');void card.offsetWidth;card.classList.add('paid-flash');}
 }
 function showBillDetail(id){
@@ -15738,7 +15738,7 @@ saveMeta();
 lsSave();
 bcreateClose();
 rRecurring();
-toast('&#128184; '+rule.name+' added!');
+toast('&#128184; '+esc(rule.name)+' added!');
 }
 function rBillsSuggestions(){
 return'<div class="stitle">Common Bills</div><div class="b-suggest-grid">'+BILL_SUGGESTIONS.map(function(s){
@@ -22977,7 +22977,7 @@ if(r.error) throw r.error;
 var idx = _autopilotActions.findIndex(function(a){ return a.id === actionId; });
 if(idx >= 0) _autopilotActions[idx].status = 'applied';
 writeAudit(auditAction, actionId, { type: action.type, title: action.title });
-toast('&#10003; Applied: ' + action.title);
+toast('&#10003; Applied: ' + esc(action.title));
 if(typeof renderAll === 'function') renderAll();
 renderAutopilotSettings();
 dbg('[applyAutopilotAction] applied: ' + actionId);
@@ -27808,7 +27808,7 @@ var data = await resp.json();
 if(data && data.error) throw new Error(data.error);
 await fetchMilestones(goalId);
 writeAudit('milestones_batch_generated', goalId, { goal_name: goal.name, count: (data && data.count) || 0 });
-toast('&#127919; Milestones generated for ' + goal.name + '!');
+toast('&#127919; Milestones generated for ' + esc(goal.name) + '!');
 renderMilestones();
 dbg('[generateMilestonesForGoal] done for goal: ' + goalId);
 } catch(e) {
