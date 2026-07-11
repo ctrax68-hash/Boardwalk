@@ -2699,7 +2699,7 @@ if(match) match.classList.add('on');
 }
 }
 var fab=document.getElementById('fab');
-if(fab)fab.className=(name==='Home'?'':'off');
+if(fab)fab.className=(name==='Analytics'?'':'off');
 rPage(name);
 setTimeout(function(){
 _gpBusy = false;
