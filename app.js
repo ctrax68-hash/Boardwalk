@@ -6089,7 +6089,7 @@ el.innerHTML=
 function goalMonthsLeft(g){
 if(!g.targetDate) return null;
 var now = new Date();
-var end = new Date(g.targetDate);
+var end = new Date(g.targetDate+'T00:00:00');
 var months = (end.getFullYear()-now.getFullYear())*12 + (end.getMonth()-now.getMonth());
 return Math.max(months, 0);
 }
@@ -6115,8 +6115,8 @@ sel.innerHTML = '<option value="">— None —</option>'
 function rGoals(){
 populateGoalCatSelect('gfc');
 var goals = AppState.goals||[];
-var totalTarget = goals.reduce(function(s,g){return s+g.target;},0);
-var totalSaved  = goals.reduce(function(s,g){return s+g.saved;},0);
+var totalTarget = Math.round(goals.reduce(function(s,g){return s+g.target;},0)*100)/100;
+var totalSaved  = Math.round(goals.reduce(function(s,g){return s+g.saved;},0)*100)/100;
 var done = goals.filter(function(g){return g.saved>=g.target;}).length;
 var summEl = document.getElementById('gsumm');
 if(summEl){
@@ -9322,7 +9322,7 @@ return '<div class="g-ring-wrap" style="width:'+size+'px;height:'+size+'px"><svg
 function goalPaceHtml(g){
 if((g.saved||0)>=(g.target||1))return'<span class="gpace done">&#127881; Done!</span>';
 if(!g.targetDate)return'';
-var now=new Date(),end=new Date(g.targetDate);
+var now=new Date(),end=new Date(g.targetDate+'T00:00:00');
 var monthsLeft=Math.max(0,(end.getFullYear()-now.getFullYear())*12+(end.getMonth()-now.getMonth()));
 if(monthsLeft<=0)return'<span class="gpace behind">Past deadline</span>';
 var needed=(g.target-(g.saved||0))/monthsLeft;
@@ -9335,7 +9335,7 @@ return'<span class="gpace '+cls+'">'+label+'</span> <span style="font-size:var(-
 function goalHealthScore(g){
 var pct=g.target>0?Math.min((g.saved||0)/g.target*100,100):0;
 var score=40+Math.round(pct*0.4);
-if(g.targetDate){var now=new Date(),end=new Date(g.targetDate),start=new Date(g.createdAt||now);
+if(g.targetDate){var now=new Date(),end=new Date(g.targetDate+'T00:00:00'),start=new Date(g.createdAt||now);
 var totalMo=Math.max(1,(end-start)/(30*24*3600*1000)),elapsed=Math.max(0,(now-start)/(30*24*3600*1000));
 if(pct>=elapsed/totalMo*100)score+=20;else if(pct>=elapsed/totalMo*70)score+=10;}
 else score+=10;
@@ -9391,8 +9391,8 @@ return;
 }
 if(typeof rGoalDashboard === 'function') { try { rGoalDashboard(); return; } catch(e) { dbg('[rGoalDashboard] err: '+e.message); } }
 var goals=AppState.goals||[];
-var totalTarget=goals.reduce(function(s,g){return s+(g.target||0);},0);
-var totalSaved=goals.reduce(function(s,g){return s+(g.saved||0);},0);
+var totalTarget=Math.round(goals.reduce(function(s,g){return s+(g.target||0);},0)*100)/100;
+var totalSaved=Math.round(goals.reduce(function(s,g){return s+(g.saved||0);},0)*100)/100;
 var done=goals.filter(function(g){return(g.saved||0)>=(g.target||0);}).length;
 var s2=document.getElementById('gsumm2');
 if(s2)s2.innerHTML=goals.length?'<div class="gsumm2-i"><div class="gsumm2-v" style="color:#1A8A4D">'+fmt(totalSaved)+'</div><div class="gsumm2-l">Total Saved</div></div><div class="gsumm2-i"><div class="gsumm2-v">'+fmt(totalTarget)+'</div><div class="gsumm2-l">Total Target</div></div><div class="gsumm2-i"><div class="gsumm2-v" style="color:#1A1A1A">'+done+'</div><div class="gsumm2-l">Completed</div></div>':'';
@@ -17285,7 +17285,9 @@ return '<div class="recur-detected-banner">'
 +'</div>';
 }
 function createRuleFromPattern(encoded) {
-var p = JSON.parse(decodeURIComponent(encoded));
+var p;
+try { p = JSON.parse(decodeURIComponent(encoded)); }
+catch(e) { toast('&#9888; Could not create rule — pattern data was corrupted.'); return; }
 var nextDue = calcNextDue ? calcNextDue(p.lastDate, p.frequency) : p.lastDate;
 pushSnapshot('Create recurring rule from pattern');
 AppState.recurRules = AppState.recurRules||[];
@@ -31595,7 +31597,7 @@ return goals.filter(function(g){return g&&!g._deleted;}).map(function(g){
 var target = parseFloat(g.target||g.targetAmount||g.goal)||0;
 var saved  = parseFloat(g.saved||g.current||g.currentAmount||0);
 var pct    = target>0 ? Math.min(saved/target, 1.0) : 0;
-var deadline = g.targetDate ? new Date(g.targetDate) : null;
+var deadline = g.targetDate ? new Date(g.targetDate+'T00:00:00') : null;
 var daysLeft = deadline ? Math.max(Math.round((deadline-today)/86400000),0) : null;
 var dailyNeeded = (daysLeft&&daysLeft>0) ? (target-saved)/daysLeft : null;
 var projDays = dailyNeeded && dailyNeeded>0 ? Math.round((target-saved)/dailyNeeded) : null;
@@ -34071,7 +34073,7 @@ var adjustments=[];
 var goals=(AppState.goals||[]).filter(function(g){return g&&!g._deleted&&g.targetDate;});
 goals.forEach(function(g){
 if(!g.targetDate) return;
-var current=new Date(g.targetDate);
+var current=new Date(g.targetDate+'T00:00:00');
 var today=new Date();
 var daysLeft=Math.max(Math.round((current-today)/86400000),0);
 if(!daysLeft) return;
@@ -35557,7 +35559,7 @@ return goals.map(function(g){
 var target  = parseFloat(g.target||g.targetAmount||g.goal)||0;
 var saved   = parseFloat(g.saved||g.current||g.currentAmount||0);
 var remaining= Math.max(target-saved,0);
-var deadline = g.targetDate?new Date(g.targetDate):null;
+var deadline = g.targetDate?new Date(g.targetDate+'T00:00:00'):null;
 var daysLeft = deadline?Math.max(Math.round((deadline-now)/86400000),0):null;
 var monthsLeft= daysLeft!==null?Math.max(daysLeft/30,0.5):null;
 return { id:g.id, name:g.name||'Goal', target:target, saved:saved,
