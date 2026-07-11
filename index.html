@@ -692,7 +692,8 @@ align-items: center;
 justify-content: center;
 gap: 4px;
 padding: 0 12px;
-height: 40px;
+height: 44px;
+flex: 1;
 min-width: 60px;
 border-radius: 8px;
 border: 1px solid rgba(0,0,0,0.10);
@@ -11127,9 +11128,9 @@ if(raf)cancelAnimationFrame(raf);
         <div class="set-hdr">Theme</div>
         <div class="card">
           
-          <div class="set-row" style="border-bottom:1px solid rgba(0,0,0,0.05);padding-bottom:12px">
+          <div class="set-row" style="flex-direction:column;align-items:flex-start;gap:6px;border-bottom:1px solid rgba(0,0,0,0.05);padding-bottom:12px">
             <div class="set-row-left"><div class="set-row-label">Display Mode</div><div class="set-row-sub">Light or dark display</div></div>
-            <div style="display:flex;gap:6px">
+            <div style="display:flex;gap:8px;width:100%">
               <button class="theme-mode-btn" id="theme-light" onclick="setTheme('light')" aria-label="Light theme" title="Light">
                 <span style="font-size:16px">&#9728;</span><span class="theme-mode-lbl">Light</span>
               </button>
