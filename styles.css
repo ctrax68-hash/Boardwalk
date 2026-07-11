@@ -1424,7 +1424,14 @@ touch-action:manipulation;
 flex:1;
 overflow-y:auto;
 overflow-x:hidden;
-padding:var(--lg) var(--lg) calc(var(--nav) + var(--xl));
+padding:var(--lg) var(--lg) var(--xl);
+/* #nav-wrap is position:fixed and floats on top of #shell rather than
+   participating in its flex layout, so without this #content's own
+   scrollable box extends full-height behind the nav — any scroll that
+   stops with a row inside that final --nav-tall strip (a partial/
+   momentum scroll, or a programmatic scrollIntoView) leaves that row
+   visually and interactively covered by the nav's higher z-index. */
+margin-bottom:calc(var(--nav) + env(safe-area-inset-bottom,0px));
 scroll-behavior:smooth;
 -webkit-overflow-scrolling:touch;
 }
@@ -1468,7 +1475,7 @@ max-width:100%;
 }
 #content{
 max-width:100%;
-padding:var(--lg) var(--lg) calc(var(--nav) + var(--xl));
+padding:var(--lg) var(--lg) var(--xl);
 }
 #ov,#bcreate-ov{
 justify-content:center;
@@ -2476,7 +2483,7 @@ transition:background .1s;
 
 .b-overall-bar{height:10px;background:var(--border);border-radius:8px;overflow:hidden;margin:var(--sm) 0 var(--xs);}
 .b-overall-fill{height:100%;border-radius:8px;transition:width .5s cubic-bezier(.4,0,.2,1);}
-#content{scroll-padding-top:var(--sm);padding-bottom:calc(var(--nav) + env(safe-area-inset-bottom,0px) + var(--lg));}
+#content{scroll-padding-top:var(--sm);padding-bottom:var(--lg);}
 :focus-visible{outline:2px solid var(--gm);outline-offset:2px;}
 button:focus:not(:focus-visible){outline:none;}
 .sv,.bsumm-v,.isumm-v,.anv,.lts-v{transition:color .2s;}
