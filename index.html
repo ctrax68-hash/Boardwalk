@@ -5006,9 +5006,15 @@ position:relative;flex-shrink:0;
 transition:background .18s;border:none;
 -webkit-tap-highlight-color:transparent;
 touch-action:manipulation;
-/* Expand tap target without changing visual size */
-padding:9px 0;
-margin:-9px 0;
+}
+.set-toggle::before{
+/* Expand tap target to 44px+ without changing visual size.
+   Uses an absolutely-positioned pseudo-element instead of
+   padding/margin since box-sizing:border-box (set globally)
+   makes the padding+negative-margin trick a no-op — it was
+   leaving the real hit target at only 26px tall. */
+content:'';position:absolute;
+top:-9px;bottom:-9px;left:-8px;right:-8px;
 }
 .set-toggle.on{background:var(--gd);}
 .set-toggle::after{
