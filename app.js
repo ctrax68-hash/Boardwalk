@@ -29232,9 +29232,10 @@ renderDataRetention();
 var _aiMemoryCache       = [];    // household_ai_memory rows for this household
 var _aiMemoryTypeFilter  = 'all'; // current UI filter
 var _aiMemoryLoading     = false; // guard
+var _aiMemoryFetched     = false; // true once a fetch has completed (even with zero rows), so the "Loading…" state isn't re-entered forever
 async function fetchAIMemory(tags, types) {
 var client = sb || sbInit();
-if(!client || !_v2Household) return [];
+if(!client || !_v2Household) { _aiMemoryFetched = true; return []; }
 _aiMemoryLoading = true;
 try {
 var params = { p_household_id: _v2Household.id, p_limit: 40 };
@@ -29250,6 +29251,7 @@ dbg('[fetchAIMemory] error: ' + e.message);
 return [];
 } finally {
 _aiMemoryLoading = false;
+_aiMemoryFetched = true;
 }
 }
 async function fetchRelevantMemory(tags, types, limit) {
@@ -29314,9 +29316,9 @@ function renderAIMemory() {
 var el = document.getElementById('hsp-ai-memory');
 if(!el) return;
 var isOwner = AppState.currentUserRole === 'owner';
-if(!_aiMemoryCache.length && !_aiMemoryLoading) {
+if(!_aiMemoryCache.length && !_aiMemoryLoading && !_aiMemoryFetched) {
 el.innerHTML = '<div class="memory-empty">Loading AI memory…</div>';
-fetchAIMemory().then(function(rows){ if(rows && rows.length) renderAIMemory(); });
+fetchAIMemory().then(function(){ renderAIMemory(); });
 return;
 }
 var TYPES = ['all', 'observation', 'pattern', 'preference', 'goal_note', 'risk_flag'];
