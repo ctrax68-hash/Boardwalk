@@ -706,10 +706,12 @@ font-family: inherit;
 -webkit-tap-highlight-color: transparent;
 transition: background .14s, border-color .14s, color .14s;
 }
+@media (hover:hover) and (pointer:fine) {
 body.app-loaded .theme-mode-btn:hover {
 background: rgba(101,170,225,0.07) !important;
 border-color: #65AAE1 !important;
 color: #3A7FBF !important;
+}
 }
 body.app-loaded .theme-mode-btn.on {
 background: #65AAE1 !important;
@@ -2294,7 +2296,8 @@ word-break:break-word;
 #page-Settings .accent-swatch,
 #page-Settings .auth-btn,
 #page-Settings .set-danger-btn,
-#page-Settings .set-sec-btn{position:relative;z-index:1;pointer-events:auto;touch-action:manipulation;}
+#page-Settings .set-sec-btn,
+#page-Settings .theme-mode-btn{position:relative;z-index:1;pointer-events:auto;touch-action:manipulation;}
 .srow:last-child{border:none;}
 #dbg-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9998;display:none;align-items:flex-end;justify-content:center;}
 #dbg-ov.open{display:flex;}
