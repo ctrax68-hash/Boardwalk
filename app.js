@@ -21095,6 +21095,18 @@ return d.toLocaleDateString([], { month:'short', day:'numeric' });
 //   staleAfterMs: optional — if set, shows a "rerun?" nudge once the result is
 //                 older than this (default 24h)
 // }
+// A 'pending' row means an AI run was started (client inserted the row,
+// then called the backing Edge Function) but the Edge Function never
+// updated it to 'ready' or 'error' — most commonly because it threw before
+// reaching its final update call. Real runs finish in well under a minute,
+// so a 'pending' row older than this is an abandoned run, not one still
+// in flight — without this, an abandoned run shows "Calculating…" forever.
+function _isPendingStale(row, thresholdMs) {
+if(!row || row.status !== 'pending') return false;
+var ts = row.created_at || row.updated_at;
+if(!ts) return false;
+return (Date.now() - new Date(ts).getTime()) > (thresholdMs || 300000);
+}
 function renderToolStatusLine(opts) {
 var cache        = opts.cache;
 var runFnName    = opts.runFnName;
@@ -21132,6 +21144,12 @@ return '<div class="tool-status-line error">'
 }
 
 if(status === 'pending') {
+if(!isRunning && _isPendingStale(row)) {
+return '<div class="tool-status-line error">'
++ '<span class="tool-status-dot error"></span> Previous attempt didn\'t complete'
++ (runCallExpr ? ' <button class="tool-retry-btn" onclick="' + runCallExpr + '" aria-label="Retry">Retry</button>' : '')
++ '</div>';
+}
 return '<div class="tool-status-line pending">'
 + '<span class="tool-status-dot pending"></span> In progress&hellip;'
 + '</div>';
@@ -23763,7 +23781,6 @@ var r = await client
 .from('household_master_brain_insights')
 .select('id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -23997,6 +24014,8 @@ if(!_mBrainInsight) {
 fetchMasterBrainInsights().then(function(r){ if(r) renderMasterBrainInsights(); });
 fetchMasterBrainState().then(function(s){ if(s) renderMasterBrainInsights(); });
 insightHtml = '<div class="mb-empty">Run the Master Brain to get a unified cross-engine analysis of all your household finances.</div>';
+} else if(_mBrainInsight.status === 'pending' && !_mBrainRunning && _isPendingStale(_mBrainInsight)) {
+insightHtml = '<div class="mb-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_mBrainInsight.status === 'pending' || _mBrainRunning) {
 insightHtml = '<div class="mb-empty">&#9203; Synthesising all engines…</div>';
 } else if(_mBrainInsight.status === 'error') {
@@ -24434,7 +24453,6 @@ var r = await client
 .from('household_scenario_insights')
 .select('id, scenario_run_id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -24570,6 +24588,8 @@ var insightHtml = '';
 if(!_scenarioInsightCache) {
 fetchScenarioInsights().then(function(r){ if(r) renderScenarioInsights(); });
 insightHtml = '<div class="sc-empty">Configure a scenario above and run it to see projected outcomes.</div>';
+} else if(_scenarioInsightCache.status === 'pending' && !_scenarioRunning && _isPendingStale(_scenarioInsightCache)) {
+insightHtml = '<div class="sc-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_scenarioInsightCache.status === 'pending' || _scenarioRunning) {
 insightHtml = '<div class="sc-empty">&#9203; Running scenario analysis…</div>';
 } else if(_scenarioInsightCache.status === 'error') {
@@ -24753,7 +24773,6 @@ var r = await client
 .from('household_life_event_insights')
 .select('id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -24883,6 +24902,8 @@ var insightHtml = '';
 if(!_leInsightCache) {
 fetchLifeEventInsights().then(function(r){ if(r) renderLifeEventInsights(); });
 insightHtml = '<div class="le-empty">Add upcoming life events and run an analysis to project costs and timeline impacts.</div>';
+} else if(_leInsightCache.status === 'pending' && !_leRunning && _isPendingStale(_leInsightCache)) {
+insightHtml = '<div class="le-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_leInsightCache.status === 'pending' || _leRunning) {
 insightHtml = '<div class="le-empty">&#9203; Projecting life event costs…</div>';
 } else if(_leInsightCache.status === 'error') {
@@ -25017,7 +25038,6 @@ var r = await client
 .from('household_risk_insights')
 .select('id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -25143,6 +25163,8 @@ var insightHtml = '';
 if(!_riskInsightCache) {
 fetchLongTermRiskInsights().then(function(r){ if(r) renderLongTermRiskInsights(); });
 insightHtml = '<div class="risk-empty">Add risk signals above and run an analysis to identify long-term threats.</div>';
+} else if(_riskInsightCache.status === 'pending' && !_riskRunning && _isPendingStale(_riskInsightCache)) {
+insightHtml = '<div class="risk-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_riskInsightCache.status === 'pending' || _riskRunning) {
 insightHtml = '<div class="risk-empty">&#9203; Analysing risk profile…</div>';
 } else if(_riskInsightCache.status === 'error') {
@@ -25298,7 +25320,6 @@ var r = await client
 .from('household_estate_insights')
 .select('id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -25400,6 +25421,8 @@ var insightHtml = '';
 if(!_estateInsightCache) {
 fetchEstateInsights().then(function(r){ if(r) renderEstateInsights(); });
 insightHtml = '<div class="est-empty">Run an estate review to get AI-powered completeness analysis.</div>';
+} else if(_estateInsightCache.status === 'pending' && !_estateRunning && _isPendingStale(_estateInsightCache)) {
+insightHtml = '<div class="est-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_estateInsightCache.status === 'pending' || _estateRunning) {
 insightHtml = '<div class="est-empty">&#9203; Reviewing estate documents…</div>';
 } else if(_estateInsightCache.status === 'error') {
@@ -25530,7 +25553,6 @@ var r = await client
 .from('household_cash_insights')
 .select('id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -25640,6 +25662,8 @@ var insightHtml = '';
 if(!_cashInsightCache) {
 fetchCashInsights().then(function(r){ if(r) renderCashInsights(); });
 insightHtml = '<div class="cash-empty">Save your balances above and run a cash analysis to get started.</div>';
+} else if(_cashInsightCache.status === 'pending' && !_cashRunning && _isPendingStale(_cashInsightCache)) {
+insightHtml = '<div class="cash-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_cashInsightCache.status === 'pending' || _cashRunning) {
 insightHtml = '<div class="cash-empty">&#9203; Analysing cash positions…</div>';
 } else if(_cashInsightCache.status === 'error') {
@@ -25778,7 +25802,6 @@ var r = await client
 .from('household_retirement_insights')
 .select('id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -25887,6 +25910,8 @@ var insightHtml = '';
 if(!_retInsightCache) {
 fetchRetirementInsights().then(function(r){ if(r) renderRetirementInsights(); });
 insightHtml = '<div class="ret-empty">Save your profile above and run a retirement plan to get started.</div>';
+} else if(_retInsightCache.status === 'pending' && !_retRunning && _isPendingStale(_retInsightCache)) {
+insightHtml = '<div class="ret-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_retInsightCache.status === 'pending' || _retRunning) {
 insightHtml = '<div class="ret-empty">&#9203; Analysing retirement projections…</div>';
 } else if(_retInsightCache.status === 'error') {
@@ -25983,7 +26008,6 @@ var r = await client
 .from('household_insurance_insights')
 .select('id, status, insights, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -26142,6 +26166,8 @@ if(!_insPoliciesCache.length) fetchInsurancePolicies().then(function(r){ if(r.le
 var insightHtml = '';
 if(!_insInsightCache) {
 fetchInsuranceInsights().then(function(r){ if(r) renderInsuranceInsights(); });
+} else if(_insInsightCache.status === 'pending' && !_insRunning && _isPendingStale(_insInsightCache)) {
+insightHtml = '<div class="ins-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_insInsightCache.status === 'pending' || _insRunning) {
 insightHtml = '<div class="ins-empty">&#9203; Analysing coverage…</div>';
 } else if(_insInsightCache.status === 'error') {
@@ -26550,7 +26576,6 @@ var r = await client
 .from('household_investment_insights')
 .select('id, status, total_value, diversification_score, risk_score, result_json, error_msg, created_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -26700,6 +26725,8 @@ holdingsHtml = '<div class="inv-empty">No investments tracked. Add your holdings
 var insightHtml = '';
 if(!_invInsightCache) {
 fetchInvestmentInsights().then(function(r){ if(r) renderInvestmentInsights(); });
+} else if(_invInsightCache.status === 'pending' && !_invRunning && _isPendingStale(_invInsightCache)) {
+insightHtml = '<div class="inv-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 } else if(_invInsightCache.status === 'pending' || _invRunning) {
 insightHtml = '<div class="inv-empty">&#9203; Analysing portfolio…</div>';
 } else if(_invInsightCache.status === 'error') {
@@ -27980,7 +28007,6 @@ var r = await client
 .from('household_financial_health')
 .select('id, status, overall_score, score_json, error_msg, created_at, updated_at')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -28090,6 +28116,10 @@ runBtn = runBtn + statusLine;
 if(!_healthScoreCache) {
 fetchFinancialHealthScore().then(function(h){ if(h) renderFinancialHealthScore(); });
 el.innerHTML = runBtn + '<div class="fhs-empty">No score yet. Run your first financial health check.</div>';
+return;
+}
+if(_healthScoreCache.status === 'pending' && !_healthScoreRunning && _isPendingStale(_healthScoreCache)) {
+el.innerHTML = runBtn + '<div class="fhs-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 return;
 }
 if(_healthScoreCache.status === 'pending' || _healthScoreRunning) {
@@ -28480,7 +28510,6 @@ var r = await client
 .from('household_forecasts')
 .select('id, horizon_days, status, result_json, created_at, updated_at, error_msg')
 .eq('household_id', _v2Household.id)
-.eq('status', 'ready')
 .order('created_at', { ascending: false })
 .limit(1)
 .maybeSingle();
@@ -28525,6 +28554,10 @@ isRunning: _forecastRunning, runningLabel: 'Forecast running…'
 if(!_forecastCache) {
 fetchLatestForecast().then(function(f) { if(f) renderForecast(); });
 el.innerHTML = controlsHtml + '<div class="forecast-empty">No forecast yet. Select a horizon and run your first forecast.</div>';
+return;
+}
+if(_forecastCache.status === 'pending' && !_forecastRunning && _isPendingStale(_forecastCache)) {
+el.innerHTML = controlsHtml + '<div class="forecast-empty" style="color:#dc2626">&#9888; Previous run didn\'t complete. Try again.</div>';
 return;
 }
 if(_forecastCache.status === 'pending' || _forecastRunning) {
