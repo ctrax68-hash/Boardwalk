@@ -1016,7 +1016,8 @@ reject(new Error('unlinkBankAccount mock failed: ' + e.message));
 }
 function attachUnlinkHandler() {
 var btn = document.getElementById('unlink-bank-btn');
-if(!btn) return;
+if(!btn || btn._unlinkHandlerAttached) return;
+btn._unlinkHandlerAttached = true;
 btn.addEventListener('click', function() {
 if(!confirm('Disconnect your bank? This will stop auto-sync. Your existing transactions will not be deleted.')) return;
 btn.disabled = true;
@@ -9060,12 +9061,14 @@ if(dy >= THRESHOLD){
 refreshing = true;
 ptr.className = 'refreshing';
 ptrText.textContent = 'Refreshing…';
+if(navigator.vibrate) navigator.vibrate(10);
 setTimeout(function(){
-try{ renderAll(); } catch(e){}
+try{ if(typeof autoGenerateRecurring==='function') autoGenerateRecurring(); renderAll(); } catch(e){}
 ptr.className = '';
 ptrText.textContent = 'Pull to refresh';
 refreshing = false;
 startY = 0; currentY = 0;
+toast('Refreshed');
 }, 800);
 } else {
 ptr.className = '';
@@ -21209,6 +21212,7 @@ url:     null,    // signed download URL when ready
 pollTimer: null   // setInterval handle for status polling
 };
 async function requestHouseholdExport(format) {
+if(_exportState.status === 'pending' || _exportState.status === 'processing') { toast('An export is already in progress.'); return { exportId: null, error: 'in_flight' }; }
 var client = sb || sbInit();
 if(!client || !_v2Household || !_v2User) return { exportId: null, error: 'not signed in' };
 var fmt = format || 'json';
@@ -21512,6 +21516,7 @@ return 'You are a personal finance advisor for ' + hhName + ' (' + membersCount 
 + ']} — include 3 to 6 items.';
 }
 async function requestAIInsights(monthKey) {
+if(_aiInsightState.status === 'processing') { toast('Insights are already being generated…'); return { insightId: null, error: 'in_flight' }; }
 var client = sb || sbInit();
 if(!client || !_v2Household || !_v2User) { toast('Not signed in — please log in first'); return { insightId: null, error: 'not signed in' }; }
 if(typeof enforceLimitsOrThrow === 'function') {
@@ -27769,6 +27774,7 @@ return [];
 }
 }
 async function generateMilestonesForGoal(goalId) {
+if(_milestoneGenRunning) { toast('Milestones are already being generated…'); return; }
 var client = sb || sbInit();
 if(!client || !_v2Household || !_v2Session) return;
 var goal = AppState.goals && AppState.goals.find(function(g){ return g.id === goalId; });
@@ -46683,53 +46689,6 @@ setTimeout(function(){ openModal(null); }, 500);
 } catch(e){}
 }); // end runSplash callback
 }); // end DOMContentLoaded
-(function initPTR(){
-var content   = document.getElementById('content');
-var indicator = document.getElementById('ptr-indicator');
-if(!content || !indicator) return;
-var startY=0, pulling=false, triggered=false;
-var THRESHOLD=72, MAX_PULL=90;
-content.addEventListener('touchstart', function(e){
-if(content.scrollTop > 2){ pulling=false; return; }
-startY=e.touches[0].clientY; pulling=true; triggered=false;
-}, {passive:true});
-content.addEventListener('touchmove', function(e){
-if(!pulling) return;
-var dy=e.touches[0].clientY - startY;
-if(dy<=0){ pulling=false; hidePtr(); return; }
-var travel=Math.min(dy*0.45, MAX_PULL);
-var pct=Math.min(travel/THRESHOLD, 1);
-indicator.classList.add('visible');
-indicator.classList.remove('spinning');
-indicator.style.transform='translateX(-50%) translateY('+(Math.round(travel-20))+'px) rotate('+(Math.round(pct*200))+'deg)';
-indicator.style.opacity=String(Math.min(pct*1.4, 1));
-if(travel>=THRESHOLD && !triggered){
-triggered=true;
-if(navigator.vibrate) navigator.vibrate(10);
-}
-}, {passive:true});
-content.addEventListener('touchend', function(){
-if(!pulling) return;
-pulling=false;
-if(triggered){
-indicator.style.transform='translateX(-50%) translateY(12px)';
-indicator.classList.remove('visible');
-indicator.classList.add('spinning');
-setTimeout(function(){
-try{ if(typeof autoGenerateRecurring==='function') autoGenerateRecurring(); renderAll(); }catch(e){}
-hidePtr();
-toast('Refreshed');
-}, 650);
-} else {
-hidePtr();
-}
-}, {passive:true});
-function hidePtr(){
-indicator.classList.remove('visible','spinning');
-indicator.style.transform='translateX(-50%) translateY(-60px)';
-indicator.style.opacity='0';
-}
-}());
 /* ---- originally inline <script>, source index.html lines 58371-58383 ---- */
 (function(){
 function checkSplash(){
@@ -49326,19 +49285,24 @@ function openCashflowSimulator() {
   var overlay = csEl('cashflow-sim-modal-overlay');
   if (!overlay) return;
   overlay.style.display = 'flex';
-  document.body.style.overflow = 'hidden';
+  enableScrollLock();
   window.cashflowSimulationMode = true;
   var bar = csEl('d24-sim-mode-bar');
   if (bar) bar.style.display = 'block';
+  document.addEventListener('keydown', _csEscHandler);
   renderCashflowSimulator();
 }
 function closeCashflowSimulator() {
   var overlay = csEl('cashflow-sim-modal-overlay');
+  if (overlay && overlay.style.display !== 'none') disableScrollLock();
   if (overlay) overlay.style.display = 'none';
-  document.body.style.overflow = '';
   window.cashflowSimulationMode = false;
   var bar = csEl('d24-sim-mode-bar');
   if (bar) bar.style.display = 'none';
+  document.removeEventListener('keydown', _csEscHandler);
+}
+function _csEscHandler(e) {
+  if (e.key === 'Escape') closeCashflowSimulator();
 }
 function csOverlayClick(evt) {
   if (evt.target && evt.target.id === 'cashflow-sim-modal-overlay') closeCashflowSimulator();
