@@ -1121,7 +1121,7 @@ if(!t || typeof t !== 'object') return null;
 t.id         = t.id         || 'tx_'+String(Date.now())+'_'+Math.random().toString(36).slice(2,6);
 t.type       = (t.type === 'income' || t.type === 'expense') ? t.type : 'expense';
 t.amount     = parseFloat(t.amount)||0;
-if(isNaN(t.amount)) t.amount = 0;
+if(isNaN(t.amount) || t.amount < 0) t.amount = 0;
 if(!validateDate(t.date)) t.date = new Date().toISOString().split('T')[0];
 t.category   = t.category || 'Other';
 t.mk         = t.mk || t.date.slice(0,7);
@@ -2108,6 +2108,7 @@ if(typeof _cpIndex !== 'undefined') _cpIndex = null;
 invalidateMonthSummCache();
 invalidateHeatmapCache();
 }
+var _lsQuotaWarned = false;
 function lsSave(){
 try{localStorage.setItem(SK,JSON.stringify({
 transactions:AppState.transactions,
@@ -2121,7 +2122,13 @@ assets:AppState.assets,
 liabilities:AppState.liabilities,
 budgetGroups:BUDGET_GROUPS,
 _schemaVersion: SCHEMA_VERSION
-}));}catch(e){}
+}));}catch(e){
+dbg('[DBG] lsSave failed: '+e.message);
+if(!_lsQuotaWarned){
+_lsQuotaWarned = true;
+try{ toast('⚠ Storage is full — new changes may not be saved. Free up device space or export a backup.'); }catch(te){}
+}
+}
 _alertsCache = null;
 _budgetHealthCache = null;
 _dashCache = null;
@@ -3531,6 +3538,41 @@ var content = document.getElementById('content');
 if(content) content.removeAttribute('aria-hidden');
 }
 }
+// Generic keyboard Tab-trap: while any modal/overlay is open, keeps Tab/Shift+Tab
+// cycling inside it instead of escaping into the (aria-hidden) background page —
+// aria-hidden alone stops screen readers but not physical Tab-key traversal.
+document.addEventListener('keydown', function(e){
+if(e.key !== 'Tab' || _modalOpenCount <= 0) return;
+var candidates = document.querySelectorAll('[role="dialog"], [id$="-ov"], [id$="-overlay"], [id$="-modal"]');
+var modal = null;
+for(var i = candidates.length - 1; i >= 0; i--){
+var el = candidates[i];
+if(!el || !el.classList) continue;
+var style = window.getComputedStyle(el);
+if(style.display === 'none' || style.visibility === 'hidden') continue;
+if(parseFloat(style.opacity) === 0) continue;
+if(style.pointerEvents === 'none') continue;
+modal = el; break;
+}
+if(!modal) return;
+var focusables = modal.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+var list = Array.prototype.filter.call(focusables, function(fel){ return fel.offsetParent !== null || fel === document.activeElement; });
+if(!list.length) return;
+var first = list[0], last = list[list.length - 1];
+var active = document.activeElement;
+if(!modal.contains(active)){
+e.preventDefault();
+(e.shiftKey ? last : first).focus();
+return;
+}
+if(e.shiftKey && active === first){
+e.preventDefault();
+last.focus();
+} else if(!e.shiftKey && active === last){
+e.preventDefault();
+first.focus();
+}
+}, true);
 // iOS Safari inconsistently moves keyboard/DOM focus on tap — some elements
 // pick it up, most (plain <button>s in particular) don't, so
 // document.activeElement can easily be *stale*: still pointing at whatever
@@ -6411,27 +6453,30 @@ return candidates.find(function(t){return txMatchesRule(t,rule);});
 }
 function autoGenerateRecurring(){
 if(!AppState.recurRules || !Array.isArray(AppState.recurRules)) return;
-var now = new Date();
+var today = getTodayStr();
 var changed = false;
+var metaChanged = false;
 AppState.recurRules.forEach(function(rule){
 if(!rule || !rule.active || !rule.autoGenerate) return;
 if(!rule.id || !rule.amount) return; // Validate required fields
-if(rule.endDate && getTodayStr() > rule.endDate) return;
-var monthsToCheck = [{y: cY, m: cM}];
-monthsToCheck.forEach(function(mo){
-var monthKey = mk(mo.y, mo.m);
-var already = AppState.transactions.some(function(t){
-if(t.recurRuleId !== rule.id) return false;
-var txMk = t.mk || t.date.slice(0,7);
-if(txMk !== monthKey) return false;
-if(t.type !== (rule.type === 'income' ? 'income' : 'expense')) return false;
-if(Math.abs(parseFloat(t.amount) - rule.amount) >= 0.01) return false;
-return true;
-});
-if(already) return;
-var maxDay = new Date(mo.y, mo.m+1, 0).getDate();
+if(rule.endDate && today > rule.endDate) return;
+// Seed the first due date from dayOfMonth if the rule has never been scheduled yet
+var dueDate = rule.nextDue;
+if(!dueDate){
+var now = new Date();
+var maxDay = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
 var day = Math.min(rule.dayOfMonth || 1, maxDay);
-var txDate = mo.y+'-'+String(mo.m+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+dueDate = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+}
+// Walk forward through every occurrence that has come due (respecting freq), capped to avoid runaway loops
+var guard = 0;
+while(dueDate && dueDate <= today && guard < 36){
+guard++;
+var thisDue = dueDate;
+var already = AppState.transactions.some(function(t){
+return t.recurRuleId === rule.id && t.date === thisDue;
+});
+if(!already){
 var tx = {
 id: String(Date.now())+'_r'+Math.random().toString(36).slice(2,6),
 type: rule.type === 'income' ? 'income' : 'expense',
@@ -6441,17 +6486,22 @@ merchantRaw: rule.name||'Auto-recurring',
 merchantNorm: rule.keyword || rule.name || 'auto',
 merchant: rule.name||'Auto-recurring',
 note: rule.note || 'Auto-generated recurring',
-date: txDate,
-mk: monthKey,
+date: thisDue,
+mk: thisDue.slice(0,7),
 recurRuleId: rule.id,
-sig: makeSig(txDate, rule.amount, rule.name)
+sig: makeSig(thisDue, rule.amount, rule.name)
 };
 AppState.transactions.unshift(tx);
 saveTxToDB(tx);
 changed = true;
-});
+}
+dueDate = calcNextDue(thisDue, rule.freq);
+rule.nextDue = dueDate;
+metaChanged = true;
+}
 });
 if(changed) lsSave();
+if(metaChanged) saveMeta();
 }
 function runRuleMatching(){
 var today = getTodayStr();
@@ -6738,11 +6788,18 @@ function delRecurRule(id){
 var delId=id||_recurEditId;
 if(!delId)return;
 if(!confirm('Delete this recurring rule?'))return;
+var today=getTodayStr();
+var removedCount=0;
+AppState.transactions=AppState.transactions.filter(function(t){
+if(t.recurRuleId===delId && t.date>today){ removedCount++; return false; }
+return true;
+});
 AppState.recurRules=AppState.recurRules.filter(function(r){return r.id!==delId;});
 saveMeta();
+if(removedCount) lsSave();
 disableScrollLock();
 document.getElementById('rov').style.display='none';
-rRecurring();toast('Rule deleted');
+rRecurring();toast('Rule deleted'+(removedCount?' — removed '+removedCount+' upcoming transaction'+(removedCount>1?'s':''):''));
 }
 function toggleRecurActive(id){
 var rule=AppState.recurRules.find(function(r){return r.id===id;});
@@ -7609,6 +7666,7 @@ if(!g) return;
 if(AppState.budgets[oldCat]){ AppState.budgets[newCat]=AppState.budgets[oldCat]; delete AppState.budgets[oldCat]; }
 if(AppState.budgetItems[oldCat]){ AppState.budgetItems[newCat]=AppState.budgetItems[oldCat]; delete AppState.budgetItems[oldCat]; }
 AppState.transactions.forEach(function(t){ if(t.category===oldCat) t.category=newCat; });
+cascadeCategoryRename(oldCat, newCat);
 var idx=g.cats.indexOf(oldCat); if(idx>=0) g.cats[idx]=newCat;
 lsSave(); saveMeta(); rBudget();
 });
@@ -8786,6 +8844,18 @@ function bulkCatCancel()        { bulkUnifiedCancel(); }
 function bulkBillCatConfirm(s) { bulkUnifiedConfirm(s); }
 function bulkBillCatCancel()    { bulkUnifiedCancel(); }
 
+function cascadeCategoryRename(oldCat, newCat){
+if(!oldCat || !newCat || oldCat===newCat) return;
+(AppState.recurRules||[]).forEach(function(r){ if(r.category===oldCat) r.category=newCat; });
+(AppState.goals||[]).forEach(function(g){ if(g.linkedCat===oldCat) g.linkedCat=newCat; });
+}
+function cascadeCategoryRemoval(cat, fallback){
+fallback = fallback || 'Other';
+if(!cat || cat===fallback) return;
+AppState.transactions.forEach(function(t){ if(t.category===cat) t.category=fallback; });
+(AppState.recurRules||[]).forEach(function(r){ if(r.category===cat) r.category=fallback; });
+(AppState.goals||[]).forEach(function(g){ if(g.linkedCat===cat) g.linkedCat=fallback; });
+}
 function budgetRenameGroup(gid) {
 var g = BUDGET_GROUPS.find(function(x){ return x.id === gid; });
 if (!g) return;
@@ -8799,10 +8869,14 @@ var g = BUDGET_GROUPS.find(function(x){ return x.id === gid; });
 if (!g) return;
 showCfm('Delete "' + g.label + '" and all its categories?', 'Delete', function() {
 pushSnapshot('Delete group');
-g.cats.forEach(function(cat){ delete AppState.budgets[cat]; delete AppState.budgetItems[cat]; });
+g.cats.forEach(function(cat){
+delete AppState.budgets[cat];
+delete AppState.budgetItems[cat];
+if(gid !== 'other') cascadeCategoryRemoval(cat, 'Other');
+});
 delete AppState.budgets['__group_' + gid];
 BUDGET_GROUPS = BUDGET_GROUPS.filter(function(x){ return x.id !== gid; });
-saveMeta(); rBudget();
+lsSave(); saveMeta(); rBudget();
 });
 }
 function budgetAddGroup() {
@@ -8821,6 +8895,7 @@ if (newCat === oldCat) return;
 if (AppState.budgets[oldCat]) { AppState.budgets[newCat] = AppState.budgets[oldCat]; delete AppState.budgets[oldCat]; }
 if (AppState.budgetItems[oldCat]) { AppState.budgetItems[newCat] = AppState.budgetItems[oldCat]; delete AppState.budgetItems[oldCat]; }
 AppState.transactions.forEach(function(t){ if(t.category===oldCat) t.category=newCat; });
+cascadeCategoryRename(oldCat, newCat);
 var idx = g.cats.indexOf(oldCat);
 if (idx >= 0) g.cats[idx] = newCat;
 lsSave(); saveMeta(); rBudget();
@@ -8833,7 +8908,8 @@ pushSnapshot('Delete category');
 g.cats = g.cats.filter(function(c){ return c !== cat; });
 delete AppState.budgets[cat];
 delete AppState.budgetItems[cat];
-saveMeta(); rBudget();
+if(gid !== 'other') cascadeCategoryRemoval(cat, 'Other');
+lsSave(); saveMeta(); rBudget();
 }
 function budgetAddCat(gid) {
 var g = BUDGET_GROUPS.find(function(x){ return x.id === gid; });
@@ -15718,13 +15794,27 @@ var y = parseInt(parts[0]);
 var m = parseInt(parts[1])-1; // Month is 0-indexed
 var d = parseInt(parts[2]);
 if(isNaN(y) || isNaN(m) || isNaN(d)) return null;
-var nextDate = new Date(y, m, d);
+var nextDate;
 switch(freq||'monthly'){
-case 'weekly': nextDate.setDate(nextDate.getDate()+7); break;
-case 'biweekly': nextDate.setDate(nextDate.getDate()+14); break;
-case 'quarterly': nextDate.setMonth(nextDate.getMonth()+3); break;
-case 'annual': nextDate.setFullYear(nextDate.getFullYear()+1); break;
-default: nextDate.setMonth(nextDate.getMonth()+1); break;
+case 'weekly': nextDate = new Date(y, m, d); nextDate.setDate(nextDate.getDate()+7); break;
+case 'biweekly': nextDate = new Date(y, m, d); nextDate.setDate(nextDate.getDate()+14); break;
+case 'quarterly': {
+var qm = m+3, qy = y + Math.floor(qm/12); qm = ((qm%12)+12)%12;
+var qMaxDay = new Date(qy, qm+1, 0).getDate();
+nextDate = new Date(qy, qm, Math.min(d, qMaxDay));
+break;
+}
+case 'annual': {
+var aMaxDay = new Date(y+1, m+1, 0).getDate();
+nextDate = new Date(y+1, m, Math.min(d, aMaxDay));
+break;
+}
+default: {
+var nm = m+1, ny = y + Math.floor(nm/12); nm = ((nm%12)+12)%12;
+var maxDay = new Date(ny, nm+1, 0).getDate();
+nextDate = new Date(ny, nm, Math.min(d, maxDay));
+break;
+}
 }
 return getLocalDateStr(nextDate);
 }
@@ -18136,8 +18226,10 @@ dbg('[V2] forgotPw error: '+e.message);
 }
 authSetLoading('auth-forgot-btn', false);
 }
+var _localSignOutInFlight = false;
 async function authSignOut() {
 var sb = sbInit();
+_localSignOutInFlight = true;
 setSyncStatus('offline','Offline');
 if(sb) {
 try { await sb.auth.signOut(); } catch(e){ dbg('[V2] signOut error: '+e.message); }
@@ -18148,6 +18240,7 @@ safeSet(V2_GUEST_KEY, '0');
 toast('Signed out.');
 authShowOverlay();
 dbg('[V2] Signed out');
+_localSignOutInFlight = false;
 }
 async function v2RestoreSession() {
 var sb = sbInit();
@@ -18462,6 +18555,7 @@ toast('&#9888; Cloud sync error: ' + (e && e.message || 'unknown'));
 });
 }, { passive: true });
 }
+var _syncAuthErrorWarned = false;
 async function pushToCloud() {
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) return;
 var hhId = _v2Household.id;
@@ -18500,6 +18594,11 @@ if(r.error) throw r.error;
 pushed += chunk.length;
 } catch(e) {
 dbg('[SYNC] push chunk err: '+e.message);
+var _pushErrCls = (typeof classifyAuthError === 'function') ? classifyAuthError(e) : null;
+if(_pushErrCls && (_pushErrCls.type === 'session_expired' || _pushErrCls.type === 'invalid_credentials') && !_syncAuthErrorWarned) {
+_syncAuthErrorWarned = true;
+toast('⌛ Sync paused — your session expired. Please sign in again.');
+}
 chunk.forEach(function(row){ v2queueAdd(row.table_name, 'upsert', row); });
 }
 }
@@ -21856,7 +21955,7 @@ async function requestHouseholdBackup(label) {
 if(_backupInFlight) { toast('A backup is already in progress.'); return { backupId: null, error: 'in_flight' }; }
 if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can create backups.'); return { backupId: null, error: 'not_owner' }; }
 var client = sb || sbInit();
-if(!client || !_v2Household || !_v2User) return { backupId: null, error: 'not signed in' };
+if(!client || !_v2Household || !_v2User) { toast('⌛ You’re signed out — please sign in again to back up.'); return { backupId: null, error: 'not signed in' }; }
 _backupInFlight = true;
 renderBackupList();
 if(typeof enforceLimitsOrThrow === 'function') {
@@ -23323,8 +23422,8 @@ return { ok: false, error: 'permission_' + perm };
 }
 var swReg = null;
 try {
-swReg = await navigator.serviceWorker.getRegistration('/');
-if(!swReg) swReg = await navigator.serviceWorker.register('/sw.js');
+swReg = await navigator.serviceWorker.getRegistration();
+if(!swReg) swReg = await navigator.serviceWorker.register('sw.js');
 await navigator.serviceWorker.ready;
 } catch(swErr) {
 dbg('[registerPushToken] no SW: ' + swErr.message);
@@ -29902,6 +30001,7 @@ authState.session = session;
 _v2User    = session.user;
 _v2Session = session;
 authPersist('user', session.user.email, null);
+_syncAuthErrorWarned = false;
 } else if(event === 'SIGNED_OUT') {
 authState.status  = 'guest';
 authState.user    = null;
@@ -29909,10 +30009,17 @@ authState.session = null;
 _v2User    = null;
 _v2Session = null;
 authPersist('guest', null, null);
+if(!_localSignOutInFlight) {
+// Signed out in a different tab — reflect it here too instead of silently going stale
+try { renderUserPill(); } catch(e){}
+toast('⌛ You were signed out.');
+setTimeout(function(){ authShowOverlay(); }, 400);
+}
 } else if(event === 'TOKEN_REFRESHED' && session) {
 authState.session    = session;
 authState.lastAuthCheck = new Date().toISOString();
 _v2Session = session;
+_syncAuthErrorWarned = false;
 dbg('[AUTH] Token refreshed successfully');
 } else if(event === 'USER_UPDATED' && session) {
 authState.user    = session.user;
@@ -46764,6 +46871,13 @@ dbg('[Keyboard] scrollIntoView error: '+err.message);
 }, true);
 loadTheme();
 loadPrefs(); // Load personalization prefs on boot
+if('serviceWorker' in navigator) {
+window.addEventListener('load', function(){
+navigator.serviceWorker.register('sw.js').then(function(reg){
+dbg('[SW] registered, scope: '+reg.scope);
+}).catch(function(e){ dbg('[SW] registration failed: '+e.message); });
+});
+}
 setTimeout(function(){ try { maintainNextDueDates(); } catch(e) { dbg('[DBG] maintainNextDueDates err: '+e.message); } }, 1200); // Maintain nextDue dates after load
 setTimeout(function(){ try { deferredBoot(); } catch(e) { dbg('[DBG] deferredBoot err: '+e.message); } }, 800); // Deferred: search index + pattern detection
 try { if(typeof detectInviteToken === 'function') detectInviteToken(); } catch(e){}
