@@ -1516,7 +1516,7 @@ document.write(
       <div id="cashflow-simulator-container" style="background:var(--card);border-radius:var(--r-xl) var(--r-xl) 0 0;width:100%;max-width:580px;max-height:94dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;box-shadow:0 -8px 40px rgba(0,0,0,.22);">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:16px var(--lg) 12px;border-bottom:1px solid var(--border2);position:sticky;top:0;background:var(--card);z-index:1;">
           <span style="font-size:18px;font-weight:800;color:var(--text);">&#127916; Cashflow Simulator</span>
-          <button onclick="closeCashflowSimulator()" style="background:var(--card2);border:none;border-radius:50%;width:32px;height:32px;font-size:18px;line-height:32px;text-align:center;cursor:pointer;color:var(--sub);font-family:inherit;" aria-label="Close">&#10005;</button>
+          <button id="cs-close-btn" onclick="closeCashflowSimulator()" style="background:var(--card2);border:none;border-radius:50%;width:32px;height:32px;font-size:18px;line-height:32px;text-align:center;cursor:pointer;color:var(--sub);font-family:inherit;" aria-label="Close">&#10005;</button>
         </div>
         <div id="d24-sim-mode-bar" style="background:var(--ambbg);border-bottom:2px solid var(--amb);padding:8px var(--lg);font-size:var(--fs-subtext);font-weight:700;color:var(--amb);display:none;">&#9888; Simulation Mode ON — changes do not affect real data</div>
         <div style="padding:var(--md) var(--lg);">
@@ -2067,7 +2067,7 @@ document.write(
 
 </nav>
 </div>
-<div id="ov" onclick="ovc(event)">
+<div id="ov" role="dialog" aria-modal="true" aria-labelledby="mttl" onclick="ovc(event)">
   <div id="modal">
     <div class="mhdr">
       <span class="mttl" id="mttl">Add Transaction</span>
@@ -2120,11 +2120,11 @@ document.write(
 </div>
 
 
-<div id="cfm-ov" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:none;align-items:center;justify-content:center;padding:20px;">
+<div id="cfm-ov" role="dialog" aria-modal="true" aria-labelledby="cfm-msg" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:none;align-items:center;justify-content:center;padding:20px;">
   <div style="background:var(--card);border-radius:var(--r-xl);padding:24px 20px;width:100%;max-width:380px;box-shadow:var(--shadow-lg);">
     <div id="cfm-msg" style="font-size:15px;margin-bottom:20px;color:var(--text);line-height:1.4;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-      <button onclick="cfmCancel()" style="padding:13px;border-radius:12px;border:1.5px solid var(--border);background:var(--card);font-size:var(--fs-row-label);font-weight:700;cursor:pointer;font-family:inherit;color:var(--text);">Cancel</button>
+      <button id="cfm-cancel" onclick="cfmCancel()" style="padding:13px;border-radius:12px;border:1.5px solid var(--border);background:var(--card);font-size:var(--fs-row-label);font-weight:700;cursor:pointer;font-family:inherit;color:var(--text);">Cancel</button>
       <button id="cfm-ok" onclick="cfmConfirm()" style="padding:13px;border-radius:12px;border:none;background:var(--red);color:#fff;font-size:var(--fs-row-label);font-weight:700;cursor:pointer;font-family:inherit;">Delete</button>
     </div>
   </div>

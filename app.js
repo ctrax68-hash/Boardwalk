@@ -758,6 +758,7 @@ dbg('[Plaid] onHostedLinkReturn: no new bank found — session may have been can
 }
 }).catch(function(e) {
 dbg('[Plaid] onHostedLinkReturn refresh error: ' + e.message);
+toast('&#9888; Could not confirm connection status — check Settings to verify your bank linked.');
 });
 }, 1500);
 }
@@ -2461,6 +2462,10 @@ function mTx(){if(!AppState||!Array.isArray(AppState.transactions))return[];retu
 function getIncome(txs, y, m) {
 var credits = (txs||[]).filter(function(t){ return t.type==='income'; })
 .reduce(function(s,t){ return s+t.amount; }, 0);
+// Once real income has posted for the period, it supersedes the planned
+// budget estimate rather than adding to it — otherwise a planned salary
+// line plus its own matching paycheck transaction double the total.
+if (credits > 0) return credits;
 var planned = 0;
 var monthIdx = m !== undefined ? m : cM;
 if (AppState.budgetItems['__income__']) {
@@ -2469,7 +2474,7 @@ var a = it.amounts ? (it.amounts[monthIdx]||0) : 0;
 return s + a;
 }, 0);
 }
-return planned > 0 ? planned + credits : credits;
+return planned;
 }
 var _pageStack=[];
 // ══════════════════════════════════════════════════════════════════════════
@@ -3498,6 +3503,10 @@ document.body.style.position = 'fixed';
 document.body.style.width = '100%';
 document.body.style.height = '100%';
 document.body.style.top = (-_scrollPos) + 'px';
+// Hide the now-covered background content from screen readers so
+// VoiceOver swipe navigation can't leak into rows the user can't see.
+var content = document.getElementById('content');
+if(content) content.setAttribute('aria-hidden', 'true');
 }
 }
 function disableScrollLock(){
@@ -3509,6 +3518,8 @@ document.body.style.width = '';
 document.body.style.height = '';
 document.body.style.top = '';
 window.scrollTo(0, _scrollPos);
+var content = document.getElementById('content');
+if(content) content.removeAttribute('aria-hidden');
 }
 }
 function editTx(id){ openModal(id); }
@@ -3516,8 +3527,10 @@ function toggleRecurFields(){
 var chk = document.getElementById('frecur');
 document.getElementById('frecur-fields').style.display = chk && chk.checked ? 'block' : 'none';
 }
+var _modalTrigger = null;
 function openModal(id){
 enableScrollLock();
+_modalTrigger = document.activeElement;
 editId=id;
 _routerState.editingId = id;
 var tx=id?AppState.transactions.find(function(t){return t.id===id;}):null;
@@ -3546,6 +3559,8 @@ var fab=document.getElementById('fab');
 if(fab)fab.classList.remove('modal-open');
 editId = null;
 _routerState.editingId = null;
+if (_modalTrigger && typeof _modalTrigger.focus === 'function' && document.contains(_modalTrigger)) _modalTrigger.focus();
+_modalTrigger = null;
 dbg('[ROUTER] Modal closed, edit context reset');
 }
 function ovc(e){if(e.target===document.getElementById('ov'))closeModal();}
@@ -3692,7 +3707,7 @@ triggerWebhookEvent('transaction_created', { category: category, amount: amt, ty
 if(typeof detectSubscriptionFromTransaction === 'function') {
 detectSubscriptionFromTransaction({
 merchant: document.getElementById('fmer') ? (document.getElementById('fmer').value || '').trim() : '',
-merchantNorm: (AppState.transactions[AppState.transactions.length - 1] || {}).merchantNorm || '',
+merchantNorm: (AppState.transactions[0] || {}).merchantNorm || '',
 amount: amt, type: fT, category: category
 });
 }
@@ -6615,9 +6630,9 @@ amount:     amt,
 category:   newCat,
 _updated_at: new Date().toISOString(),
 freq:       document.getElementById('rmod-freq').value,
-dayOfMonth: parseInt(document.getElementById('rmod-day').value)||null,
+dayOfMonth: (function(){ var v=parseInt(document.getElementById('rmod-day').value); return isFinite(v) ? Math.min(31, Math.max(1, v)) : null; })(),
 keyword:    document.getElementById('rmod-kw').value.trim().toLowerCase(),
-tolerance:  parseFloat(document.getElementById('rmod-tol').value)||10,
+tolerance:  Math.min(50, Math.max(0, parseFloat(document.getElementById('rmod-tol').value)||10)),
 active:     true,
 lastMatched:null
 };
@@ -7783,20 +7798,30 @@ function inpCancel() {
 document.getElementById('inp-ov').style.display = 'none';
 _inpCb = null;
 }
+var _cfmTrigger = null;
 function showCfm(msg, okLabel, cb) {
 document.getElementById('cfm-msg').textContent = msg;
 document.getElementById('cfm-ok').textContent = okLabel || 'Delete';
 document.getElementById('cfm-ok').style.background = (okLabel && okLabel !== 'Delete') ? 'var(--gd)' : 'var(--red)';
 _cfmCb = cb;
+_cfmTrigger = document.activeElement;
 document.getElementById('cfm-ov').style.display = 'flex';
+var cancelBtn = document.getElementById('cfm-cancel');
+if (cancelBtn) cancelBtn.focus();
+}
+function _cfmRestoreFocus() {
+if (_cfmTrigger && typeof _cfmTrigger.focus === 'function' && document.contains(_cfmTrigger)) _cfmTrigger.focus();
+_cfmTrigger = null;
 }
 function cfmConfirm() {
 document.getElementById('cfm-ov').style.display = 'none';
+_cfmRestoreFocus();
 if (_cfmCb) _cfmCb();
 _cfmCb = null;
 }
 function cfmCancel() {
 document.getElementById('cfm-ov').style.display = 'none';
+_cfmRestoreFocus();
 _cfmCb = null;
 }
 // --- Bulk category update ---
@@ -8775,6 +8800,7 @@ var it = items[idx];
 var curAmt = it.amounts ? (it.amounts[cM]||0) : (it.amount||0);
 showInpPrefill('Edit "' + it.label + '"', it.label, function(newLabel, newAmt) {
 var amt = parseFloat(newAmt);
+if (!isNaN(amt) && amt < 0) { toast('Invalid amount'); return; }
 var newItem = { label: newLabel || it.label, amounts: it.amounts ? it.amounts.slice() : Array(12).fill(curAmt) };
 if (!isNaN(amt)) {
 if (!newItem.amounts) newItem.amounts = Array(12).fill(0);
@@ -14096,6 +14122,8 @@ var notesEl  = document.getElementById('ges-notes');
 var name = (nameEl ? nameEl.value.trim() : '') || g.name;
 var target = parseFloat(targetEl ? targetEl.value : g.target) || g.target;
 var saved  = parseFloat(savedEl  ? savedEl.value  : g.saved)  || 0;
+if (!target || target <= 0) { toast('Enter a valid goal target amount.'); return; }
+if (saved < 0) { toast('Saved amount cannot be negative.'); return; }
 var targetDate = dateEl  ? (dateEl.value  || null) : g.targetDate;
 var linkedCat  = catEl   ? (catEl.value   || null) : g.linkedCat;
 var notes      = notesEl ? (notesEl.value.trim() || null) : (g.notes || null);
@@ -20672,15 +20700,18 @@ renderAuditLog(document.getElementById('household-audit-log'));
 renderActivityFeedV2();
 fetchActivityFeed().then(function(){ renderActivityFeedV2(); });
 }
+var _hspTrigger = null;
 function hspOpen() {
 var panel    = document.getElementById('household-settings-panel');
 var backdrop = document.getElementById('hsp-backdrop');
 var toggle   = document.getElementById('hsp-toggle');
+_hspTrigger = document.activeElement;
 if(panel)    { panel.classList.add('open'); }
 if(backdrop) { backdrop.classList.add('open'); }
 if(toggle)   { toggle.classList.add('open'); }
 if(typeof enableScrollLock === 'function') enableScrollLock();
 renderHouseholdSettingsPanel();
+setTimeout(function(){ var closeBtn=panel&&panel.querySelector('.hsp-close'); if(closeBtn) closeBtn.focus(); }, 50);
 // Populate insights-tools section (rendered into page-Budget IDs)
 var _toolFns=[renderAIInsights,renderForecast,renderFinancialHealthScore,renderNetWorth,
   renderAdvisorThread,renderAIMemory,renderAnomalies,renderSubscriptions,renderTaxPrep,
@@ -20697,6 +20728,8 @@ if(panel)    { panel.classList.remove('open'); }
 if(backdrop) { backdrop.classList.remove('open'); }
 if(toggle)   { toggle.classList.remove('open'); }
 if(typeof disableScrollLock === 'function') disableScrollLock();
+if (_hspTrigger && typeof _hspTrigger.focus === 'function' && document.contains(_hspTrigger)) _hspTrigger.focus();
+_hspTrigger = null;
 }
 function writeAudit(action, targetId, meta) {
 var client = sb || sbInit();
@@ -21260,9 +21293,15 @@ var attempts = 0;
 _exportState.pollTimer = setInterval(function() {
 attempts++;
 checkExportStatus().then(function(status) {
-if(status === 'ready' || status === 'failed' || status === 'expired' || attempts >= 30) {
+if(status === 'ready' || status === 'failed' || status === 'expired') {
 clearInterval(_exportState.pollTimer);
 _exportState.pollTimer = null;
+} else if(attempts >= 30) {
+clearInterval(_exportState.pollTimer);
+_exportState.pollTimer = null;
+_exportState.status = 'failed';
+toast('&#9888; Export is taking longer than expected — please try again.');
+renderExportStatus();
 }
 });
 }, 4000);
@@ -21725,7 +21764,16 @@ var attempts = 0;
 var timer = setInterval(function() {
 attempts++;
 var client = sb || sbInit();
-if(!client || attempts > 30) { clearInterval(timer); return; }
+if(!client || attempts > 30) {
+clearInterval(timer);
+var idx = _backupListCache.findIndex(function(b){ return b.id === backupId; });
+if(idx >= 0 && _backupListCache[idx].status !== 'ready' && _backupListCache[idx].status !== 'failed' && _backupListCache[idx].status !== 'expired') {
+_backupListCache[idx].status = 'failed';
+toast('&#9888; Backup status check timed out — please try again.');
+renderBackupList();
+}
+return;
+}
 client.from('household_backups')
 .select('status, download_url, tx_count, file_size_bytes')
 .eq('id', backupId)
@@ -24752,7 +24800,7 @@ status:         'upcoming'
 }).select('id, event_type, event_date, metadata, created_at').single();
 if(r.error) throw r.error;
 _lifeEventsCache.push(r.data);
-_lifeEventsCache.sort(function(a,b){
+_lifeEventsCache = _lifeEventsCache.slice().sort(function(a,b){
 return (a.event_date || '9999') > (b.event_date || '9999') ? 1 : -1;
 });
 toast((LE_TYPE_META[eventType] ? LE_TYPE_META[eventType].icon + ' ' : '') + 'Life event added.');
@@ -27916,7 +27964,7 @@ el.innerHTML = '<div class="ms-no-goals">No goals set yet. Add a goal from the G
 return;
 }
 var html = goals.map(function(goal) {
-var milestones = (_milestonesCache[goal.id] || []).sort(function(a,b){ return a.sequence - b.sequence; });
+var milestones = (_milestonesCache[goal.id] || []).slice().sort(function(a,b){ return a.sequence - b.sequence; });
 var pct = goal.target > 0 ? Math.min(1, (goal.saved || 0) / goal.target) : 0;
 var pctStr = Math.round(pct * 100) + '%';
 var msRows = '';
@@ -30496,10 +30544,21 @@ return true;
 };
 var _pushToCloudOrig = pushToCloud;
 pushToCloud = async function() {
+// Validate-for-push must not permanently drop items from local state —
+// only the upload payload should be filtered. Swap in the validated
+// arrays for the duration of the push, then restore the real local
+// arrays afterward regardless of outcome.
+var origTx = AppState.transactions, origGoals = AppState.goals, origRules = AppState.recurRules;
+try {
 if(AppState.transactions) AppState.transactions = validator.validateForPush('transactions', AppState.transactions);
 if(AppState.goals)        AppState.goals        = validator.validateForPush('goals', AppState.goals);
 if(AppState.recurRules)   AppState.recurRules   = validator.validateForPush('recurring_rules', AppState.recurRules);
-return _pushToCloudOrig.apply(this, arguments);
+return await _pushToCloudOrig.apply(this, arguments);
+} finally {
+AppState.transactions = origTx;
+AppState.goals = origGoals;
+AppState.recurRules = origRules;
+}
 };
 var _mergeFromCloudV = mergeFromCloud;
 mergeFromCloud = function(rows) {
@@ -32514,7 +32573,15 @@ return result;
 var FORECAST_KEY = 'kevt_v3_forecast';
 var forecastEngine = {
 _hist: function(days) {
-var txs=(AppState.transactions||[]).filter(function(t){return t&&!t._deleted&&t.type!=='income'&&t.type!=='payment';});
+// Recurring-bill spend is forecasted separately and explicitly via
+// forecastRecurringBills() — if it stayed in this historical baseline too,
+// every forecast that adds bills on top of the blended average would
+// double-count them (the average already has past bill payments baked in).
+var rules=(AppState.recurRules||[]).filter(function(r){return r&&r.active&&!r._deleted;});
+var txs=(AppState.transactions||[]).filter(function(t){
+if(!t||t._deleted||t.type==='income'||t.type==='payment') return false;
+return !rules.some(function(r){return txMatchesRule(t,r);});
+});
 return cashflowEngine._dailySpends(txs, days);
 },
 _blendedDaily: function() {
@@ -34568,12 +34635,16 @@ if(m6&&m6.projectedSavings>0){
 assets.push({ id:'__auto_savings6__', type:'savings', name:'Projected 6-Mo Savings',
 value: Math.round(m6.projectedSavings), auto:true, updated_at:new Date().toISOString() });
 }
-}
+// Only estimate goal savings as their own asset when the user hasn't
+// manually tracked a cash asset — otherwise that money is almost always
+// already sitting inside the cash balance they entered, and adding it
+// again here would double-count it against net worth.
 (AppState.goals||[]).filter(function(g){return g&&!g._deleted&&(parseFloat(g.saved||g.current||0))>0;}).forEach(function(g){
 var saved=parseFloat(g.saved||g.current||0);
 if(saved>0) assets.push({id:'__goal_'+g.id, type:'savings', name:(g.name||'Goal')+' Fund',
 value:saved, auto:true, updated_at:new Date().toISOString()});
 });
+}
 return assets;
 },
 loadLiabilities: function() {
@@ -49004,6 +49075,7 @@ win.assembleAutopilotEngineInputFromUI = function() {
     return {
       id:        safeStr(t.id || t.sig),
       amount:    safeNum(t.amount),
+      type:      safeStr(t.type || 'expense'),
       date:      safeStr(t.date || t.occurredAt || today),
       category:  safeStr(t.category || t.canonicalCategory || 'uncategorized'),
       merchant:  safeStr(t.merchant_name || t.merchant || t.name || 'unknown'),
@@ -49283,9 +49355,11 @@ function csEsc(s)   { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
 function csValCls(n){ return n > 0 ? 'cs-pos' : n < 0 ? 'cs-neg' : 'cs-neu'; }
 
 // ── Open / Close ──────────────────────────────────────────────────────────
+var _csTrigger = null;
 function openCashflowSimulator() {
   var overlay = csEl('cashflow-sim-modal-overlay');
   if (!overlay) return;
+  _csTrigger = document.activeElement;
   overlay.style.display = 'flex';
   enableScrollLock();
   window.cashflowSimulationMode = true;
@@ -49293,6 +49367,7 @@ function openCashflowSimulator() {
   if (bar) bar.style.display = 'block';
   document.addEventListener('keydown', _csEscHandler);
   renderCashflowSimulator();
+  setTimeout(function(){ var closeBtn=csEl('cs-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 }
 function closeCashflowSimulator() {
   var overlay = csEl('cashflow-sim-modal-overlay');
@@ -49302,6 +49377,8 @@ function closeCashflowSimulator() {
   var bar = csEl('d24-sim-mode-bar');
   if (bar) bar.style.display = 'none';
   document.removeEventListener('keydown', _csEscHandler);
+  if (_csTrigger && typeof _csTrigger.focus === 'function' && document.contains(_csTrigger)) _csTrigger.focus();
+  _csTrigger = null;
 }
 function _csEscHandler(e) {
   if (e.key === 'Escape') closeCashflowSimulator();
@@ -51836,7 +51913,10 @@ function d17ApplyScenario(input, scenario) {
   var txs = (ls.transactions = ls.transactions || []);
   txs.forEach(function(t) {
     if (!t) return;
-    var isIncome = t.amount < 0; // negative = credit in our model
+    // Real transactions (from assembleAutopilotEngineInputFromUI) carry an
+    // explicit type and are always non-negative; only synthetic hypothetical
+    // transactions added below (which have no type) use the signed convention.
+    var isIncome = t.type ? t.type === 'income' : t.amount < 0;
     if (isIncome && scenario.incomeAdjust !== 0) {
       t.amount = t.amount * (1 + scenario.incomeAdjust / 100);
     } else if (!isIncome && scenario.expenseAdjust !== 0) {
@@ -51878,10 +51958,11 @@ function d17ApplyScenario(input, scenario) {
 // ── d17MockEngineOutput: fallback mock if engine unavailable ──────────────
 function d17MockEngineOutput(input, scenario) {
   var txs = ((input.localState || {}).transactions || []);
-  var totalIncome  = txs.filter(function(t){ return t && t.amount < 0; })
+  var _isIncomeTx = function(t){ return t.type ? t.type === 'income' : t.amount < 0; };
+  var totalIncome  = txs.filter(function(t){ return t && _isIncomeTx(t); })
                        .reduce(function(s, t){ return s + Math.abs(t.amount); }, 0);
-  var totalExpense = txs.filter(function(t){ return t && t.amount > 0; })
-                       .reduce(function(s, t){ return s + t.amount; }, 0);
+  var totalExpense = txs.filter(function(t){ return t && !_isIncomeTx(t); })
+                       .reduce(function(s, t){ return s + Math.abs(t.amount); }, 0);
   var netCashflow  = totalIncome - totalExpense;
   var accounts     = ((input.localState || {}).accounts || []);
   var totalBal     = accounts.reduce(function(s, a){ return s + (a ? (a.balance || 0) : 0); }, 0);
@@ -51889,9 +51970,9 @@ function d17MockEngineOutput(input, scenario) {
 
   // Category impact: group expenses by category
   var catMap = {};
-  txs.filter(function(t){ return t && t.amount > 0; }).forEach(function(t) {
+  txs.filter(function(t){ return t && !_isIncomeTx(t); }).forEach(function(t) {
     var c = t.category || 'other';
-    catMap[c] = (catMap[c] || 0) + t.amount;
+    catMap[c] = (catMap[c] || 0) + Math.abs(t.amount);
   });
   var categoryInsights = Object.keys(catMap).sort(function(a,b){ return catMap[b]-catMap[a]; }).slice(0,5).map(function(c) {
     return { category: c, amount: catMap[c], severity: catMap[c] > 500 ? 'warning' : 'info' };
@@ -52641,11 +52722,13 @@ var _compassRenderMap = {
   'cmodal-vault':     ['renderVault','renderTaxPrep']
 };
 
+var _compassTrigger = null;
 window._compassOpen = function(id) {
   _compassClose(_compassActiveModal);
   var sheet = document.getElementById(id);
   var bd    = document.getElementById(id + '-bd');
   if (!sheet || !bd) return;
+  _compassTrigger = document.activeElement;
   _compassActiveModal = id;
   bd.classList.add('open');
   sheet.classList.add('open');
@@ -52655,6 +52738,10 @@ window._compassOpen = function(id) {
   var body = sheet ? sheet.querySelector('.cmodal-body') : null;
   if (body) body.scrollTop = 0;
   // NOTE: No body position:fixed — that causes iOS PWA touch coordinate offsets
+  setTimeout(function() {
+    var closeBtn = sheet.querySelector('.cmodal-close');
+    if (closeBtn) closeBtn.focus();
+  }, 50);
   var fns = _compassRenderMap[id] || [];
   if (fns.length) {
     setTimeout(function() {
@@ -52675,6 +52762,8 @@ window._compassClose = function(id) {
   if (_compassActiveModal === id) {
     _compassActiveModal = null;
     document.body.classList.remove('cmodal-open');
+    if (_compassTrigger && typeof _compassTrigger.focus === 'function' && document.contains(_compassTrigger)) _compassTrigger.focus();
+    _compassTrigger = null;
   }
 };
 
