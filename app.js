@@ -45622,19 +45622,10 @@ if(el) el.textContent=
 +'UA: '+navigator.userAgent.slice(0,80)+'\n'
 +'currentMonth: '+mk(cY,cM)+'\n'
 +'S===AppState: '+(S===AppState);
-var last3=AppState.transactions.slice(0,3);
 el=document.getElementById('dbg-txs');
-if(el) el.textContent=last3.length
-?last3.map(function(t){return t.date+' '+t.type+' '+fmt(t.amount)+' '+( t.merchantNorm||t.merchant||'');}).join('\n')
-:'(none)';
-try{
-var raw=localStorage.getItem(SK)||'(empty)';
+if(el) el.textContent='(redacted — financial data hidden in debug view)';
 el=document.getElementById('dbg-ls');
-if(el) el.textContent=raw.slice(0,500)+(raw.length>500?'…':'');
-}catch(e){
-el=document.getElementById('dbg-ls');
-if(el) el.textContent='Error: '+e.message;
-}
+if(el) el.textContent='(redacted — raw storage contains unencrypted financial data)';
 try { dbgRefreshV3(); } catch(e) { dbg('[DBG] dbgRefreshV3 error: '+e.message); }
 }
 function dbgRefreshV3(){
