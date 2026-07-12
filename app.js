@@ -1299,6 +1299,7 @@ _monthSummCache = {};
 _normMemo = {};
 if(typeof invalidateHeatmapCache === 'function') invalidateHeatmapCache();
 if(typeof _recurDetectCache !== 'undefined') _recurDetectCache = null;
+if(typeof _cpIndex !== 'undefined') _cpIndex = null;
 dbg('[DBG] All caches invalidated');
 }
 var CACHE_TTL = {
@@ -2103,6 +2104,7 @@ _dashCache = null;
 _anCache = {};
 _recurDetectCache = null;
 _heatCtxCache = null;
+if(typeof _cpIndex !== 'undefined') _cpIndex = null;
 invalidateMonthSummCache();
 invalidateHeatmapCache();
 }
@@ -3636,7 +3638,7 @@ BUDGET_GROUPS = [{id:'living',label:'Living',emoji:'&#127968;',cats:[]},{id:'foo
 }
 
 // Persist the edited / new transaction into state
-if(editId){AppState.transactions=AppState.transactions.map(function(t){return t.id===editId?tx:t;});}
+if(editId){AppState.transactions=AppState.transactions.map(function(t){return t.id===editId?tx:t;});if(typeof _cpIndex !== 'undefined') _cpIndex = null;}
 else{AppState.transactions.unshift(tx);}
 saveTxToDB(tx);
 
@@ -6860,7 +6862,7 @@ budgetParseXlsx(e.target.result);
 } else {
 try {
 var text = new TextDecoder().decode(e.target.result);
-var rows = text.split('\n').map(function(l){ return l.split(','); });
+var rows = window.parseCSVText(text);
 budgetShowColumnPicker(rows, file.name);
 } catch(err) { showBudgetMsg('Error: ' + err.message, false); }
 }
@@ -7391,7 +7393,7 @@ gp('Budget', null);
 toast('Imported ' + applied + ' categories — all 12 months loaded');
 }
 function budgetShowWizard(rows, fname) {
-_biRows = rows;
+_biRows = rows.slice(1); // drop the header row — only the preview table below needs it
 document.getElementById('bi-fname').textContent = fname;
 document.getElementById('bi-rowcount').textContent = rows.length + ' rows found';
 var maxCols = 0;
@@ -7465,7 +7467,7 @@ var seen = {};
 _biRows.forEach(function(row, i) {
 var label = String(row[_biLabelCol] || '').trim();
 var rawAmt = row[_biAmtCol];
-var amt = parseFloat(rawAmt);
+var amt = window.normalizeAmount(rawAmt);
 if (!label || label.length < 2) return;
 if (isNaN(amt) || amt <= 0) return;
 if (label.toLowerCase() === 'total' || label.toLowerCase() === 'totals') return;
@@ -9075,7 +9077,10 @@ budgets: AppState.budgets,
 budgetItems: AppState.budgetItems,
 recurRules: AppState.recurRules,
 merchantMem: AppState.merchantMem,
-budgetGroups: BUDGET_GROUPS
+budgetGroups: BUDGET_GROUPS,
+assets: AppState.assets,
+liabilities: AppState.liabilities,
+customCats: AppState.customCats
 };
 var blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
 var url=URL.createObjectURL(blob);
@@ -9215,6 +9220,8 @@ var CAT_PRESETS={
 var _bsetupStep=0,_bsetupDir='forward';
 var _bsetupTrigger = null;
 function bsetupOpen(){
+var panelAlreadyOpen = document.getElementById('bsetup-ov') && document.getElementById('bsetup-ov').classList.contains('open');
+if(panelAlreadyOpen){ dbg('[BSETUP] Already open — ignoring duplicate open call'); return; }
 _bsetupTrigger = document.activeElement;
 enableScrollLock();
 _bsetupStep=0;
@@ -9227,6 +9234,7 @@ setTimeout(function(){ var closeBtn=document.querySelector('.bsheet-close-btn');
 dbg('[BSETUP] Panel opened at step '+_bsetupStep);
 }
 function bsetupClose(){
+bsetupSave();
 disableScrollLock();
 var panel=document.getElementById('bsetup-ov');
 if(panel)panel.classList.remove('open');
@@ -9250,6 +9258,7 @@ bsetupShowCompletion();
 }
 }
 function bsetupSkip(){
+bsetupSave();
 if(_bsetupStep<BSETUP_STEPS.length-1){
 _bsetupStep++;
 _bsetupDir='forward';
@@ -9267,8 +9276,10 @@ var inp=document.getElementById('bsc-inp-'+cat.replace(/[^a-zA-Z0-9]/g,'_'));
 if(!inp)return;
 var val=parseFloat(inp.value)||0;
 if(step.isIncome){
-var items=AppState.budgetItems['__income__']||[];
-items.forEach(function(it){if(it.label===cat){it.amounts=Array(12).fill(val);it.yearlyTotal=val*12;}});
+var items=AppState.budgetItems['__income__']||(AppState.budgetItems['__income__']=[]);
+var existing=items.find(function(it){return it.label===cat;});
+if(existing){existing.amounts=Array(12).fill(val);existing.yearlyTotal=val*12;}
+else if(val>0){items.push({label:cat,amounts:Array(12).fill(val),owner:'Combined',yearlyTotal:val*12});}
 } else {
 AppState.budgets[cat]=val;
 if(AppState.budgetItems[cat]&&AppState.budgetItems[cat][0]){
@@ -9337,7 +9348,7 @@ function computeBudgetHealth(){
 var incItems=AppState.budgetItems['__income__']||[];
 var income=incItems.reduce(function(s,it){return s+((it.amounts&&it.amounts[0])||0);},0);
 var totalBudget=Object.keys(AppState.budgets).reduce(function(s,cat){return s+(AppState.budgets[cat]||0);},0);
-if(totalBudget===0)return{score:50,label:'Solid',cls:'bhealth-solid'};
+if(totalBudget===0)return{score:0,label:'&#9888; Not Set Up',cls:'bhealth-risk',income:income,totalBudget:0};
 var score=50;
 if(income>0){var sr=(income-totalBudget)/income;if(sr>=0.20)score+=30;else if(sr>=0.10)score+=20;else if(sr>=0)score+=10;}
 else score+=10;
@@ -15263,6 +15274,12 @@ var last = parseInt(sessionStorage.getItem(key)||'0', 10);
 if (Date.now() - last > 60000) {
 sessionStorage.setItem(key, String(Date.now()));
 setTimeout(function(){ showGoalCelebration(goalId); }, 500);
+if (typeof writeNotification === 'function') {
+writeNotification('goal_completed', 'Goal completed', (g && g.name ? '"' + g.name + '" ' : 'A goal ') + 'was fully funded!', null);
+}
+if (typeof triggerWebhookEvent === 'function') {
+triggerWebhookEvent('goal_completed', { goalId: goalId, name: g && g.name, target: target });
+}
 }
 }
 }
@@ -16556,6 +16573,16 @@ if(_prefs.fontSize) applyFontSizeCss(_prefs.fontSize);
 document.body.classList.toggle('hi-contrast', !!_prefs.highContrast);
 if(_prefs.reduceMotion) document.body.style.setProperty('--reduce-motion','1');
 else document.body.style.removeProperty('--reduce-motion');
+// Restore dark/light theme from persisted prefs — nothing else in the boot
+// sequence applies the 'dim' class the whole dark-mode CSS system keys off,
+// so without this, dark mode silently reverted to light on every reload.
+if(_prefs.theme==='dim') document.body.classList.add('dim');
+else if(_prefs.theme==='auto') {
+var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme:dark)').matches;
+document.body.classList.toggle('dim', !!prefersDark);
+} else if(_prefs.theme==='light') {
+document.body.classList.remove('dim');
+}
 }
 function applyAccentCss(accent) {
 var c = ACCENT_COLORS[accent];
@@ -17764,6 +17791,13 @@ dbg('[loadCurrentUserRole] error: ' + e.message);
 return null;
 }
 }
+// Re-check role on tab focus so a demotion/removal made from another device
+// or tab doesn't leave a stale owner-level UI visible indefinitely.
+document.addEventListener('visibilitychange', function(){
+if(!document.hidden && _v2User && _v2Household) {
+loadCurrentUserRole().then(function(){ if(typeof hhRenderSettings === 'function') hhRenderSettings(); });
+}
+}, false);
 function canWrite() {
 var r = AppState.currentUserRole;
 return r === 'owner' || r === 'member';
@@ -18136,6 +18170,7 @@ dbg('[V2] Household loaded: '+_v2Household.name);
 }
 async function v2InviteMember(email) {
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) { toast('Sign in first.'); return; }
+if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can invite members.'); return; }
 if(!email || !/\S+@\S+\.\S+/.test(email)) { toast('Enter a valid email.'); return; }
 try {
 var r = await sb.from('household_invites').insert({
@@ -19427,6 +19462,7 @@ return _hhInvites;
 }
 async function renameHousehold(newName) {
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) return;
+if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can rename the household.'); return; }
 if(!newName || !newName.trim()) { toast('Enter a household name.'); return; }
 var name = newName.trim();
 try {
@@ -19448,6 +19484,7 @@ hhRenderSettings();
 }
 async function removeMember(memberId, rowEl) {
 if(!memberId) return;
+if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can remove members.'); return; }
 showCfm('Remove this member from your household?', 'Remove Member', async function(){
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) return;
 if(rowEl){ rowEl.classList.add('hh-removing'); await new Promise(function(r){setTimeout(r,250);}); }
@@ -19467,7 +19504,7 @@ hhRenderSettings();
 } catch(e) { toast('Remove failed: '+e.message); dbg('[HH] remove error: '+e.message); hhRenderSettings(); }
 });
 }
-async function changeHouseholdMemberRole(memberId, newRole) {
+async function changeHouseholdMemberRole(memberId, newRole, targetUserId) {
 if(!memberId || !newRole) return;
 if(newRole === 'owner') { toast('Transfer ownership is not supported from this UI.'); return; }
 if(AppState.currentUserRole !== 'owner') { toast('Only owners can change member roles.'); return; }
@@ -19482,7 +19519,7 @@ if(r.error) throw r.error;
 toast('&#10003; Role updated to ' + newRole + '.');
 dbg('[changeHouseholdMemberRole] ' + memberId + ' → ' + newRole);
 writeAudit('role_changed', memberId, { role: newRole, memberId: memberId });
-writeNotification('role_changed', 'Role updated', 'Your role was changed to ' + newRole + '.', memberId);
+if(targetUserId) writeNotification('role_changed', 'Role updated', 'Your role was changed to ' + newRole + '.', targetUserId);
 await loadHouseholdMembers();
 hhRenderSettings();
 } catch(e) {
@@ -19713,7 +19750,7 @@ overflowHtml =
 '<div class="hh-member-row-wrap" style="position:relative;display:inline-flex">'
 +'<button class="hh-more-btn" aria-label="More actions for '+esc(email)+'" aria-haspopup="true" aria-controls="'+menuId+'" onclick="hhToggleOverflow(\''+menuId+'\',event)">&#8942;</button>'
 +'<div id="'+menuId+'" class="hh-overflow-menu" role="menu">'
-+'<div class="hh-overflow-item" role="menuitem" onclick="hhChangeRoleInline(\''+m.id+'\',\''+role+'\',\''+menuId+'\')">'
++'<div class="hh-overflow-item" role="menuitem" onclick="hhChangeRoleInline(\''+m.id+'\',\''+role+'\',\''+menuId+'\',\''+(m.user_id||'')+'\')">'
 +'&#9997;&nbsp; Change Role'
 +'</div>'
 +'<div class="hh-overflow-item danger" role="menuitem" onclick="hhRemoveInline(\''+m.id+'\',\''+esc(email)+'\',\''+menuId+'\')">'
@@ -19750,12 +19787,12 @@ if(!e.target.closest('.hh-member-row-wrap')) {
 document.querySelectorAll('.hh-overflow-menu.open').forEach(function(el){ el.classList.remove('open'); });
 }
 });
-function hhChangeRoleInline(memberId, currentRole, menuId) {
+function hhChangeRoleInline(memberId, currentRole, menuId, targetUserId) {
 var menu = document.getElementById(menuId);
 if(menu) menu.classList.remove('open');
 var newRole = currentRole === 'member' ? 'viewer' : 'member';
 showCfm('Change role to "' + newRole + '"?', 'Change Role', function() {
-changeHouseholdMemberRole(memberId, newRole).then(function(){ rHousehold(); });
+changeHouseholdMemberRole(memberId, newRole, targetUserId).then(function(){ rHousehold(); });
 });
 }
 function hhRemoveInline(memberId, email, menuId) {
@@ -20487,7 +20524,7 @@ var roleCls = role === 'owner' ? 'owner' : (role === 'viewer' ? 'viewer' : 'memb
 var roleLabel = isMe ? role + ' (you)' : role;
 var roleControl = (isOwner && !isMe && role !== 'owner')
 ? '<select class="hh-role-select" aria-label="Change role for '+esc(email)+'"'
-+ ' onchange="changeHouseholdMemberRole(\''+m.id+'\',this.value)">'
++ ' onchange="changeHouseholdMemberRole(\''+m.id+'\',this.value,\''+(m.user_id||'')+'\')">'
 + '<option value="member"'+(role==='member'?' selected':'')+'>member</option>'
 + '<option value="viewer"'+(role==='viewer'?' selected':'')+'>viewer</option>'
 + '</select>'
@@ -21410,7 +21447,7 @@ _exportState.url    = row.download_url || null;
 if(row.status === 'ready' && _exportState._lastNotifiedReady !== _exportState.id) {
 _exportState._lastNotifiedReady = _exportState.id;
 writeNotification('export_ready', 'Export ready',
-'Your ' + _exportState.format.toUpperCase() + ' export is ready to download.', _v2User && _v2User.id);
+'Your ' + _exportState.format.toUpperCase() + ' export is ready to download.', null);
 writeAudit('export_ready', _exportState.id, { format: _exportState.format, rows: row.row_count });
 }
 renderExportStatus();
@@ -21874,7 +21911,7 @@ if(idx >= 0) Object.assign(_backupListCache[idx], row);
 if(status === 'ready') {
 clearInterval(timer);
 writeNotification('backup_ready', 'Backup ready',
-'Your household backup is complete and ready to download.', _v2User && _v2User.id);
+'Your household backup is complete and ready to download.', null);
 writeAudit('backup_ready', backupId, { tx_count: row.tx_count });
 writeAudit('backup_created', backupId, { tx_count: row.tx_count });
 triggerWebhookEvent('backup_created', { backupId: backupId, tx_count: row.tx_count });
@@ -22082,6 +22119,7 @@ writeNotification('join_via_link', 'New member joined',
 'A new member joined your household via a sharing link.', null);
 writeAudit('join_via_link', null, { householdId: hid });
 writeAudit('member_joined', null, { householdId: hid, method: 'sharing_link' });
+triggerWebhookEvent('member_joined', { householdId: hid, method: 'sharing_link' });
 logCloudActivity('merge', 'Joined via sharing link', { householdId: hid });
 sendPushEventAdvanced('member_joined', 'New member joined', 'Someone joined your household via a sharing link.', null, null, { actions: [{ id:'view', label:'View members' }] });
 dbg('[acceptJoinLink] joined: ' + hid);
@@ -45339,10 +45377,13 @@ return result;
 };
 }
 function toggleTheme(){
-var body=document.body;
-var isDim=body.getAttribute('data-theme')==='dim';
-body.setAttribute('data-theme',isDim?'':'dim');
-try{localStorage.setItem(THEME_KEY,isDim?'':'dim');}catch(e){}
+// Delegate to setTheme() so this uses the same body.classList('dim')
+// mechanism the full dark-mode CSS system keys off, instead of the
+// separate data-theme attribute this used to set (which only matched an
+// 11-property fallback block and left the ~118-rule component overrides
+// unapplied — most of the UI stayed in light-mode colors).
+var isDim = document.body.classList.contains('dim');
+setTheme(isDim ? 'light' : 'dim');
 }
 function loadTheme(){
 try{
@@ -50342,6 +50383,7 @@ function convertParsedRowsToRawPlaidItems(rows) {
   });
 
   var txSeen = {};
+  var dupOccurrence = {};
   var transactions = rows.map(function(r, idx) {
     var colDate     = colMap['date']     ? (r[colMap['date']]    || '') : '';
     var colAmount   = colMap['amount']   ? (r[colMap['amount']]  || '') : '';
@@ -50352,10 +50394,23 @@ function convertParsedRowsToRawPlaidItems(rows) {
 
     var date    = normalizeDate(colDate) || today;
     var amount  = normalizeAmount(colAmount);
+    // normalizeAmount() falls back to 0 for unparseable text (e.g. "N/A",
+    // "pending") the same way it does for a genuinely blank/zero amount —
+    // distinguish the two here so garbage doesn't silently become a real
+    // $0 transaction with no indication anything was skipped.
+    var amtRawTrim = String(colAmount||'').trim();
+    if (amtRawTrim && !/^[-+]?[$]?[\d,]*\.?\d+\)?$|^\([\d,]*\.?\d+\)$/.test(amtRawTrim.replace(/\s/g,''))) return null;
     var merchant= colMerchant.trim() || 'Import Row ' + (idx+1);
     var acctName= colAcct.trim();
     var acctId  = acctName ? ('import-' + acctName.toLowerCase().replace(/[^a-z0-9]+/g,'-')) : 'import-default';
-    var txId    = colId.trim() || ('import-' + date + '-' + Math.abs(amount) + '-' + idx);
+    // Key on content (date+amount+merchant), not row position — a positional
+    // idx would give the same logical transaction a different id every time
+    // it appears in a different file (e.g. re-importing an overlapping date
+    // range), defeating dedup entirely. An occurrence count still lets two
+    // genuinely-identical transactions on the same day coexist.
+    var dupKey  = date + '-' + Math.abs(amount) + '-' + merchant.toLowerCase();
+    var dupN    = dupOccurrence[dupKey] = (dupOccurrence[dupKey] || 0) + 1;
+    var txId    = colId.trim() || ('import-' + date + '-' + Math.abs(amount) + '-' + merchant.toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-' + dupN);
 
     // Skip duplicate IDs
     if (txSeen[txId]) return null;
@@ -50409,6 +50464,8 @@ function convertParsedRowsToRawPlaidItems(rows) {
 win.convertParsedRowsToRawPlaidItems = convertParsedRowsToRawPlaidItems;
 win.parseCSVFile  = parseCSVFile;
 win.parseXLSXFile = parseXLSXFile;
+win.parseCSVText  = parseCSVText;
+win.normalizeAmount = normalizeAmount;
 
 // ── Open dialog ───────────────────────────────────────────────
 var _importModalTrigger = null;

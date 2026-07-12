@@ -979,10 +979,12 @@ body.dim.app-loaded .bc-spent,
 body.dim.app-loaded .bi-label,
 body.dim.app-loaded .bsumm-l,
 body.dim.app-loaded .snap-lbl,
-body.dim.app-loaded .set-row-sub {
+body.dim.app-loaded .set-row-sub,
+body.dim.app-loaded .gsumm-l {
 color: rgba(255,255,255,0.45) !important;
 }
 body.dim.app-loaded .bsumm-v,
+body.dim.app-loaded #bsumm .bsumm-v,
 body.dim.app-loaded .bi-amt,
 body.dim.app-loaded .txn,
 body.dim.app-loaded .txa {
@@ -1014,7 +1016,8 @@ body.dim.app-loaded .tut-skip,
 body.dim.app-loaded .auth-btn.secondary,
 body.dim.app-loaded .bsetup-btn.secondary,
 body.dim.app-loaded .bsheet-btn.secondary,
-body.dim.app-loaded .set-sec-btn {
+body.dim.app-loaded .set-sec-btn,
+body.dim.app-loaded .dbtn {
 background: transparent !important;
 color: #65AAE1 !important;
 border: 1px solid #65AAE1 !important;
