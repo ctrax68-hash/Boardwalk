@@ -1123,39 +1123,28 @@ try { PlaidLinkManager.checkPendingHostedLink(); } catch(e) {}
 }
 }, false);
 
-function unlinkBankAccount() {
-return new Promise(function(resolve, reject) {
-setTimeout(function() {
-try {
-resolve({ success: true });
-} catch(e) {
-reject(new Error('unlinkBankAccount mock failed: ' + e.message));
-}
-}, 300);
-});
-}
 function attachUnlinkHandler() {
 var btn = document.getElementById('unlink-bank-btn');
 if(!btn || btn._unlinkHandlerAttached) return;
 btn._unlinkHandlerAttached = true;
 btn.addEventListener('click', function() {
 if(!confirm('Disconnect your bank? This will stop auto-sync. Your existing transactions will not be deleted.')) return;
+var ps = typeof PlaidLinkManager !== 'undefined' ? PlaidLinkManager.getState() : null;
+var firstBank = ps && ps.banks && ps.banks[0];
+if(!firstBank) { toast('&#9888; No connected bank found.'); return; }
 btn.disabled = true;
 btn.textContent = 'Disconnecting…';
-unlinkBankAccount().then(function(r) {
-if(r && r.success) {
-if(typeof PlaidLinkManager !== 'undefined') PlaidLinkManager.disconnect();
-toast('&#9989; Bank account unlinked.');
-} else {
-toast('&#9888; Unlink failed — please try again.');
+// disconnectBank() actually revokes the connection with Plaid (via
+// unlink-plaid-item) and deletes the server-side record, not just a
+// client-side flag — this row previously called a mock that faked
+// success without touching Plaid or the database at all, leaving the
+// connection live and billed indefinitely while telling the user it
+// was gone.
+PlaidLinkManager.disconnectBank(firstBank.id);
+setTimeout(function() {
 btn.disabled = false;
 btn.innerHTML = '&#128274; Unlink Bank';
-}
-}).catch(function(e) {
-toast('&#9888; Unlink error: ' + (e.message || 'unknown'));
-btn.disabled = false;
-btn.innerHTML = '&#128274; Unlink Bank';
-});
+}, 1200);
 }, { once: false });
 }
 var CANONICAL_BUDGET_KEY = 'kevt_bp_v4';
