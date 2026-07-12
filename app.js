@@ -457,7 +457,7 @@ function _genId() { return 'bank_' + Date.now() + '_' + Math.floor(Math.random()
 function _saveState() {
 try {
 var safe = _banks.map(function(b) {
-return { id:b.id, institution:b.institution, accounts:b.accounts, lastSync:b.lastSync };
+return { id:b.id, item_id:b.item_id, institution:b.institution, accounts:b.accounts, lastSync:b.lastSync };
 });
 localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
 // Legacy single-bank key kept for backwards compat
@@ -479,7 +479,7 @@ var raw = localStorage.getItem(STORAGE_KEY);
 if(raw) {
 var saved = JSON.parse(raw);
 _banks = (saved||[]).map(function(b) {
-return { id:b.id||_genId(), institution:b.institution||null,
+return { id:b.id||_genId(), item_id:b.item_id||null, institution:b.institution||null,
 accounts:b.accounts||[], lastSync:b.lastSync||null,
 accessToken:null, cursor:null };
 });
@@ -735,10 +735,12 @@ var priorCount = _banks.length;
 // that we don't have locally yet (this is the one plaid-webhook just
 // created server-side).
 serverBanks.forEach(function(sb) {
-var exists = _banks.some(function(b) { return b.id === sb.id || b.institution === sb.institution_id; });
+var exists = _banks.some(function(b) { return (b.item_id && b.item_id === sb.item_id) || b.id === sb.id; });
 if(!exists) {
 _banks.push({
-id: sb.id, institution: sb.institution_id, accounts: [],
+id: sb.id, item_id: sb.item_id,
+institution: { name: sb.institution_name || 'Bank', logo: null },
+accounts: sb.accounts || [],
 lastSync: sb.updated_at || sb.created_at, accessToken: null, cursor: null
 });
 }
@@ -880,6 +882,24 @@ function _processSync(bankId, syncResult) {
 var bank = null;
 for(var i=0; i<_banks.length; i++) { if(_banks[i].id === bankId) { bank = _banks[i]; break; } }
 if(!bank || !syncResult) return;
+// Pick up refreshed account list / institution name for this bank, if the
+// sync response included one — sync-plaid-transactions refreshes these on
+// every call, which is what lets a bank connected before accounts/name
+// were being fetched self-heal without a reconnect.
+if(Array.isArray(syncResult.items)) {
+var matchedItem = syncResult.items.filter(function(it){ return it.item_id === bank.item_id; })[0];
+// Banks created before item_id tracking existed have no item_id to match
+// on. For the common single-bank case that's unambiguous — adopt the
+// lone returned item outright, which backfills item_id going forward too.
+if(!matchedItem && !bank.item_id && _banks.length === 1 && syncResult.items.length === 1) {
+matchedItem = syncResult.items[0];
+bank.item_id = matchedItem.item_id;
+}
+if(matchedItem) {
+if(Array.isArray(matchedItem.accounts) && matchedItem.accounts.length) bank.accounts = matchedItem.accounts;
+if(matchedItem.institution_name) bank.institution = { name: matchedItem.institution_name, logo: (bank.institution && bank.institution.logo) || null };
+}
+}
 var added = 0;
 var acctTypeById = {};
 (bank.accounts || []).forEach(function(a) {
