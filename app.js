@@ -651,44 +651,39 @@ function open() {
 toast('\U0001F3E4 Connecting to bank...');
 _fetchLinkToken().then(function(r) {
 if (r.hosted_link_url) {
-// Native app path (Hosted Link). There is no frontend onSuccess/onExit
-// for Hosted Link — Plaid delivers the result to plaid-webhook via the
-// SESSION_FINISHED webhook, server-side, regardless of what happens in
-// this webview. All this code needs to do is hand the URL to native code
-// to open in an ASWebAuthenticationSession.
-//
-// REQUIRED NATIVE BRIDGE: the native wrapper must implement
-// window.__boardwalkOpenHostedLink(url), which should:
-//   1. Open `url` in an ASWebAuthenticationSession (NOT a plain WKWebView
-//      — Plaid requires a secure external user-agent session for Hosted
-//      Link, and Chase's App-to-App OAuth won't work correctly otherwise)
-//   2. Register "boardwalk" as the callback URL scheme so the session's
-//      completion handler fires when Plaid redirects to
-//      boardwalk://plaid-oauth-complete
-//   3. On completion (regardless of success/failure/cancellation — the
-//      redirect fires either way per Plaid's docs), call
-//      PlaidLinkManager.onHostedLinkReturn() so the app can refresh its
-//      bank-connection state, since the actual success/failure already
-//      happened server-side via the webhook by the time this fires.
+// Hosted Link (now used for both native and web/PWA — see
+// create-plaid-link-token). There is no frontend onSuccess/onExit for
+// Hosted Link — Plaid delivers the result to plaid-webhook via the
+// SESSION_FINISHED webhook, server-side, regardless of what happens to
+// this browser tab afterward. That's what makes this survive an
+// installed Home Screen PWA: iOS routes an OAuth institution's (Chase,
+// etc.) redirect into a disconnected Safari tab instead of back into
+// the standalone app instance, so there's no reliable in-page callback
+// to hook — the server-side webhook completes the connection either
+// way, and this app just needs to notice a new bank appeared next time
+// it's in the foreground (see checkPendingHostedLink/onHostedLinkReturn
+// below).
 if (typeof window.__boardwalkOpenHostedLink === 'function') {
+// Native app bridge (ASWebAuthenticationSession) — kept for a future
+// native build; not used by the current web/PWA app.
 window.__boardwalkOpenHostedLink(r.hosted_link_url);
-} else {
-dbg('[Plaid] Native app detected but window.__boardwalkOpenHostedLink is not implemented.');
-toast('\u26A0 Bank connection not available in this build yet.');
-}
 return;
 }
-// Web/PWA path — unchanged from before.
+try {
+localStorage.setItem('kevt_plaid_hosted_link_pending', JSON.stringify({
+ts: Date.now(),
+household_id: _v2Household ? _v2Household.id : null
+}));
+} catch(e) {}
+window.location.href = r.hosted_link_url;
+return;
+}
+// Fallback: embedded Link. Only reachable if the edge function ever
+// returns no hosted_link_url. Fine for non-OAuth institutions in a plain
+// browser tab; OAuth institutions from an installed PWA icon would still
+// hit the dead end Hosted Link above exists to avoid.
 window._loadPlaidSDK(function() {
 if (!window.Plaid) { toast('\u26A0 Plaid Link not available.'); return; }
-// Persist the link_token so it survives the full page reload OAuth
-// institutions (Chase, Bank of America, etc.) trigger when they redirect
-// the user back after authenticating on the bank's own site. Without
-// this, there's no way to resume Link on return — see
-// _resumeOAuthIfNeeded() below, which reads this back on app boot. Note:
-// this web path only works in a genuine Safari tab — it does NOT work
-// when Boardwalk is opened as an installed Home Screen PWA icon, since
-// that container has no tab for Chase's OAuth redirect to return to.
 try { sessionStorage.setItem('kevt_plaid_link_token', r.link_token); } catch(e) {}
 var handler = window.Plaid.create({
 token:     r.link_token,
@@ -752,14 +747,45 @@ _saveState();
 _renderConnectedUI();
 if(_banks.length > priorCount) {
 toast('\u2705 Bank connected!');
+try { localStorage.removeItem('kevt_plaid_hosted_link_pending'); } catch(e) {}
 sync().catch(function(e) { dbg('[Plaid] post-link sync error: ' + e.message); });
 } else if(_banks.length === priorCount) {
 dbg('[Plaid] onHostedLinkReturn: no new bank found — session may have been cancelled or webhook has not landed yet.');
 }
 }).catch(function(e) {
 dbg('[Plaid] onHostedLinkReturn refresh error: ' + e.message);
+toast('&#9888; Could not confirm connection status — check Settings to verify your bank linked.');
 });
 }, 1500);
+}
+// ── Web/PWA Hosted Link pending-check ────────────────────────────────────
+// Mirrors onHostedLinkReturn above, but triggered by the app simply coming
+// back to the foreground rather than a native completion callback —
+// necessary because on an installed Home Screen PWA, iOS can route an OAuth
+// institution's redirect into a disconnected Safari tab instead of back
+// into this app instance, so there is no reliable in-page callback to hook.
+// The bank link itself already completed server-side (via the
+// plaid-webhook SESSION_FINISHED handler, now registered for every Hosted
+// Link session, not just native ones) by the time this runs — this just
+// needs to notice it.
+var PENDING_HOSTED_LINK_KEY = 'kevt_plaid_hosted_link_pending';
+var PENDING_HOSTED_LINK_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+function _readPendingHostedLink() {
+try {
+var raw = localStorage.getItem(PENDING_HOSTED_LINK_KEY);
+if (!raw) return null;
+var parsed = JSON.parse(raw);
+if (!parsed || !parsed.ts || (Date.now() - parsed.ts) > PENDING_HOSTED_LINK_MAX_AGE_MS) {
+localStorage.removeItem(PENDING_HOSTED_LINK_KEY);
+return null;
+}
+return parsed;
+} catch(e) { return null; }
+}
+function checkPendingHostedLink() {
+var pending = _readPendingHostedLink();
+if (!pending || !_v2Session || !_v2Household) return;
+onHostedLinkReturn();
 }
 function _resumeOAuthIfNeeded() {
 if (!_isOAuthRedirectReturn()) return;
@@ -999,9 +1025,19 @@ onExit:         _onExit,
 onEvent:        _onEvent,
 accountSync:   function(){ return sync(); },
 resumeOAuthIfNeeded: _resumeOAuthIfNeeded,
-onHostedLinkReturn: onHostedLinkReturn
+onHostedLinkReturn: onHostedLinkReturn,
+checkPendingHostedLink: checkPendingHostedLink
 };
 })();
+// Re-check for a completed Hosted Link connection whenever the app comes
+// back to the foreground — covers the case where an installed Home Screen
+// PWA had an OAuth bank redirect land in a disconnected Safari tab instead
+// of back here (see checkPendingHostedLink for the full explanation).
+document.addEventListener('visibilitychange', function(){
+if(!document.hidden) {
+try { PlaidLinkManager.checkPendingHostedLink(); } catch(e) {}
+}
+}, false);
 
 function unlinkBankAccount() {
 return new Promise(function(resolve, reject) {
@@ -1016,7 +1052,8 @@ reject(new Error('unlinkBankAccount mock failed: ' + e.message));
 }
 function attachUnlinkHandler() {
 var btn = document.getElementById('unlink-bank-btn');
-if(!btn) return;
+if(!btn || btn._unlinkHandlerAttached) return;
+btn._unlinkHandlerAttached = true;
 btn.addEventListener('click', function() {
 if(!confirm('Disconnect your bank? This will stop auto-sync. Your existing transactions will not be deleted.')) return;
 btn.disabled = true;
@@ -1119,7 +1156,7 @@ if(!t || typeof t !== 'object') return null;
 t.id         = t.id         || 'tx_'+String(Date.now())+'_'+Math.random().toString(36).slice(2,6);
 t.type       = (t.type === 'income' || t.type === 'expense') ? t.type : 'expense';
 t.amount     = parseFloat(t.amount)||0;
-if(isNaN(t.amount)) t.amount = 0;
+if(isNaN(t.amount) || t.amount < 0) t.amount = 0;
 if(!validateDate(t.date)) t.date = new Date().toISOString().split('T')[0];
 t.category   = t.category || 'Other';
 t.mk         = t.mk || t.date.slice(0,7);
@@ -1297,6 +1334,7 @@ _monthSummCache = {};
 _normMemo = {};
 if(typeof invalidateHeatmapCache === 'function') invalidateHeatmapCache();
 if(typeof _recurDetectCache !== 'undefined') _recurDetectCache = null;
+if(typeof _cpIndex !== 'undefined') _cpIndex = null;
 dbg('[DBG] All caches invalidated');
 }
 var CACHE_TTL = {
@@ -2101,9 +2139,11 @@ _dashCache = null;
 _anCache = {};
 _recurDetectCache = null;
 _heatCtxCache = null;
+if(typeof _cpIndex !== 'undefined') _cpIndex = null;
 invalidateMonthSummCache();
 invalidateHeatmapCache();
 }
+var _lsQuotaWarned = false;
 function lsSave(){
 try{localStorage.setItem(SK,JSON.stringify({
 transactions:AppState.transactions,
@@ -2117,7 +2157,13 @@ assets:AppState.assets,
 liabilities:AppState.liabilities,
 budgetGroups:BUDGET_GROUPS,
 _schemaVersion: SCHEMA_VERSION
-}));}catch(e){}
+}));}catch(e){
+dbg('[DBG] lsSave failed: '+e.message);
+if(!_lsQuotaWarned){
+_lsQuotaWarned = true;
+try{ toast('⚠ Storage is full — new changes may not be saved. Free up device space or export a backup.'); }catch(te){}
+}
+}
 _alertsCache = null;
 _budgetHealthCache = null;
 _dashCache = null;
@@ -2460,6 +2506,10 @@ function mTx(){if(!AppState||!Array.isArray(AppState.transactions))return[];retu
 function getIncome(txs, y, m) {
 var credits = (txs||[]).filter(function(t){ return t.type==='income'; })
 .reduce(function(s,t){ return s+t.amount; }, 0);
+// Once real income has posted for the period, it supersedes the planned
+// budget estimate rather than adding to it — otherwise a planned salary
+// line plus its own matching paycheck transaction double the total.
+if (credits > 0) return credits;
 var planned = 0;
 var monthIdx = m !== undefined ? m : cM;
 if (AppState.budgetItems['__income__']) {
@@ -2468,7 +2518,7 @@ var a = it.amounts ? (it.amounts[monthIdx]||0) : 0;
 return s + a;
 }, 0);
 }
-return planned > 0 ? planned + credits : credits;
+return planned;
 }
 var _pageStack=[];
 // ══════════════════════════════════════════════════════════════════════════
@@ -3013,11 +3063,18 @@ function setAlertMode(mode){
 }
 
 /* ── advanced filter sheet ── */
+var _alertsFilterTrigger = null;
 function alertsFilterOpen(){
+  _alertsFilterTrigger = _captureFocusTrigger();
   document.getElementById('alerts-filter-overlay').style.display='flex';
   document.getElementById('alerts-filter-overlay').style.alignItems='flex-end';
+  setTimeout(function(){ var closeBtn=document.getElementById('alerts-filter-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 }
-function alertsFilterClose(){ document.getElementById('alerts-filter-overlay').style.display='none'; _updateAlertFilterDot(); rAlerts(); }
+function alertsFilterClose(){
+  document.getElementById('alerts-filter-overlay').style.display='none'; _updateAlertFilterDot(); rAlerts();
+  if (_alertsFilterTrigger && typeof _alertsFilterTrigger.focus === 'function' && document.contains(_alertsFilterTrigger)) _alertsFilterTrigger.focus();
+  _alertsFilterTrigger = null;
+}
 function alertsFilterClear(){
   _alAdvFilters={system:'all',severity:'all',time:'all'};
   alFiltSetSys('all'); alFiltSetSev('all'); alFiltSetTime('all');
@@ -3497,6 +3554,10 @@ document.body.style.position = 'fixed';
 document.body.style.width = '100%';
 document.body.style.height = '100%';
 document.body.style.top = (-_scrollPos) + 'px';
+// Hide the now-covered background content from screen readers so
+// VoiceOver swipe navigation can't leak into rows the user can't see.
+var content = document.getElementById('content');
+if(content) content.setAttribute('aria-hidden', 'true');
 }
 }
 function disableScrollLock(){
@@ -3508,15 +3569,75 @@ document.body.style.width = '';
 document.body.style.height = '';
 document.body.style.top = '';
 window.scrollTo(0, _scrollPos);
+var content = document.getElementById('content');
+if(content) content.removeAttribute('aria-hidden');
 }
+}
+// Generic keyboard Tab-trap: while any modal/overlay is open, keeps Tab/Shift+Tab
+// cycling inside it instead of escaping into the (aria-hidden) background page —
+// aria-hidden alone stops screen readers but not physical Tab-key traversal.
+document.addEventListener('keydown', function(e){
+if(e.key !== 'Tab' || _modalOpenCount <= 0) return;
+var candidates = document.querySelectorAll('[role="dialog"], [id$="-ov"], [id$="-overlay"], [id$="-modal"]');
+var modal = null;
+for(var i = candidates.length - 1; i >= 0; i--){
+var el = candidates[i];
+if(!el || !el.classList) continue;
+var style = window.getComputedStyle(el);
+if(style.display === 'none' || style.visibility === 'hidden') continue;
+if(parseFloat(style.opacity) === 0) continue;
+if(style.pointerEvents === 'none') continue;
+modal = el; break;
+}
+if(!modal) return;
+var focusables = modal.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+var list = Array.prototype.filter.call(focusables, function(fel){ return fel.offsetParent !== null || fel === document.activeElement; });
+if(!list.length) return;
+var first = list[0], last = list[list.length - 1];
+var active = document.activeElement;
+if(!modal.contains(active)){
+e.preventDefault();
+(e.shiftKey ? last : first).focus();
+return;
+}
+if(e.shiftKey && active === first){
+e.preventDefault();
+last.focus();
+} else if(!e.shiftKey && active === last){
+e.preventDefault();
+first.focus();
+}
+}, true);
+// iOS Safari inconsistently moves keyboard/DOM focus on tap — some elements
+// pick it up, most (plain <button>s in particular) don't, so
+// document.activeElement can easily be *stale*: still pointing at whatever
+// element happened to last receive focus, not the one the user just tapped
+// to open this modal. A stale read is worse than no read — it silently
+// "restores" focus to the wrong control on close. The just-tapped element
+// (tracked here via pointerdown, which always fires fresh on the current
+// gesture) is the more reliable signal; document.activeElement is only
+// trusted as a fallback for purely keyboard-driven opens (no pointer
+// event at all, e.g. Tab+Enter) or once the pointer signal goes stale.
+var _lastPointerTarget = null;
+var _lastPointerTargetAt = 0;
+document.addEventListener('pointerdown', function(e){
+_lastPointerTarget = e.target && e.target.closest ? e.target.closest('button, a, [role="button"], [tabindex]') : null;
+_lastPointerTargetAt = Date.now();
+}, true);
+function _captureFocusTrigger(){
+if(_lastPointerTarget && (Date.now() - _lastPointerTargetAt) < 1000) return _lastPointerTarget;
+var active = document.activeElement;
+return (active && active !== document.body && active !== document.documentElement) ? active : null;
 }
 function editTx(id){ openModal(id); }
 function toggleRecurFields(){
 var chk = document.getElementById('frecur');
 document.getElementById('frecur-fields').style.display = chk && chk.checked ? 'block' : 'none';
 }
+var _modalTrigger = null;
 function openModal(id){
 enableScrollLock();
+_modalTrigger = _captureFocusTrigger();
 editId=id;
 _routerState.editingId = id;
 var tx=id?AppState.transactions.find(function(t){return t.id===id;}):null;
@@ -3545,6 +3666,8 @@ var fab=document.getElementById('fab');
 if(fab)fab.classList.remove('modal-open');
 editId = null;
 _routerState.editingId = null;
+if (_modalTrigger && typeof _modalTrigger.focus === 'function' && document.contains(_modalTrigger)) _modalTrigger.focus();
+_modalTrigger = null;
 dbg('[ROUTER] Modal closed, edit context reset');
 }
 function ovc(e){if(e.target===document.getElementById('ov'))closeModal();}
@@ -3613,7 +3736,7 @@ BUDGET_GROUPS = [{id:'living',label:'Living',emoji:'&#127968;',cats:[]},{id:'foo
 }
 
 // Persist the edited / new transaction into state
-if(editId){AppState.transactions=AppState.transactions.map(function(t){return t.id===editId?tx:t;});}
+if(editId){AppState.transactions=AppState.transactions.map(function(t){return t.id===editId?tx:t;});if(typeof _cpIndex !== 'undefined') _cpIndex = null;}
 else{AppState.transactions.unshift(tx);}
 saveTxToDB(tx);
 
@@ -3691,7 +3814,7 @@ triggerWebhookEvent('transaction_created', { category: category, amount: amt, ty
 if(typeof detectSubscriptionFromTransaction === 'function') {
 detectSubscriptionFromTransaction({
 merchant: document.getElementById('fmer') ? (document.getElementById('fmer').value || '').trim() : '',
-merchantNorm: (AppState.transactions[AppState.transactions.length - 1] || {}).merchantNorm || '',
+merchantNorm: (AppState.transactions[0] || {}).merchantNorm || '',
 amount: amt, type: fT, category: category
 });
 }
@@ -3748,12 +3871,19 @@ function setTxFilter(f){
 }
 
 /* ── Advanced filter helpers ── */
+var _txAdvFilterTrigger = null;
 function txAdvFilterOpen(){
+  _txAdvFilterTrigger = _captureFocusTrigger();
   _txAdvBuildCatChips();
   document.getElementById('txadv-overlay').style.display='flex';
   document.getElementById('txadv-overlay').style.alignItems='flex-end';
+  setTimeout(function(){ var closeBtn=document.getElementById('txadv-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 }
-function txAdvFilterClose(){ document.getElementById('txadv-overlay').style.display='none'; }
+function txAdvFilterClose(){
+  document.getElementById('txadv-overlay').style.display='none';
+  if (_txAdvFilterTrigger && typeof _txAdvFilterTrigger.focus === 'function' && document.contains(_txAdvFilterTrigger)) _txAdvFilterTrigger.focus();
+  _txAdvFilterTrigger = null;
+}
 function txAdvBuildCatChips(){ _txAdvBuildCatChips(); }
 function _txAdvBuildCatChips(){
   var cats = Object.keys(CCOL);
@@ -6088,7 +6218,7 @@ el.innerHTML=
 function goalMonthsLeft(g){
 if(!g.targetDate) return null;
 var now = new Date();
-var end = new Date(g.targetDate);
+var end = new Date(g.targetDate+'T00:00:00');
 var months = (end.getFullYear()-now.getFullYear())*12 + (end.getMonth()-now.getMonth());
 return Math.max(months, 0);
 }
@@ -6114,8 +6244,8 @@ sel.innerHTML = '<option value="">— None —</option>'
 function rGoals(){
 populateGoalCatSelect('gfc');
 var goals = AppState.goals||[];
-var totalTarget = goals.reduce(function(s,g){return s+g.target;},0);
-var totalSaved  = goals.reduce(function(s,g){return s+g.saved;},0);
+var totalTarget = Math.round(goals.reduce(function(s,g){return s+g.target;},0)*100)/100;
+var totalSaved  = Math.round(goals.reduce(function(s,g){return s+g.saved;},0)*100)/100;
 var done = goals.filter(function(g){return g.saved>=g.target;}).length;
 var summEl = document.getElementById('gsumm');
 if(summEl){
@@ -6215,7 +6345,7 @@ var contrib={id:String(Date.now()),amount:amt,date:new Date().toISOString().spli
 g.contributions=g.contributions||[];
 g.contributions.push(contrib);
 g.saved=Math.min(g.saved+amt,g.target);
-saveGoalToDB(g);rGoals();toast('+'+fmt(amt)+' added to '+g.name+'!');
+saveGoalToDB(g);rGoals();toast('+'+fmt(amt)+' added to '+esc(g.name)+'!');
 if(typeof updateMilestones === 'function') updateMilestones(g.id);
 }
 var _goalModalId = null;
@@ -6358,27 +6488,30 @@ return candidates.find(function(t){return txMatchesRule(t,rule);});
 }
 function autoGenerateRecurring(){
 if(!AppState.recurRules || !Array.isArray(AppState.recurRules)) return;
-var now = new Date();
+var today = getTodayStr();
 var changed = false;
+var metaChanged = false;
 AppState.recurRules.forEach(function(rule){
 if(!rule || !rule.active || !rule.autoGenerate) return;
 if(!rule.id || !rule.amount) return; // Validate required fields
-if(rule.endDate && getTodayStr() > rule.endDate) return;
-var monthsToCheck = [{y: cY, m: cM}];
-monthsToCheck.forEach(function(mo){
-var monthKey = mk(mo.y, mo.m);
-var already = AppState.transactions.some(function(t){
-if(t.recurRuleId !== rule.id) return false;
-var txMk = t.mk || t.date.slice(0,7);
-if(txMk !== monthKey) return false;
-if(t.type !== (rule.type === 'income' ? 'income' : 'expense')) return false;
-if(Math.abs(parseFloat(t.amount) - rule.amount) >= 0.01) return false;
-return true;
-});
-if(already) return;
-var maxDay = new Date(mo.y, mo.m+1, 0).getDate();
+if(rule.endDate && today > rule.endDate) return;
+// Seed the first due date from dayOfMonth if the rule has never been scheduled yet
+var dueDate = rule.nextDue;
+if(!dueDate){
+var now = new Date();
+var maxDay = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
 var day = Math.min(rule.dayOfMonth || 1, maxDay);
-var txDate = mo.y+'-'+String(mo.m+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+dueDate = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+}
+// Walk forward through every occurrence that has come due (respecting freq), capped to avoid runaway loops
+var guard = 0;
+while(dueDate && dueDate <= today && guard < 36){
+guard++;
+var thisDue = dueDate;
+var already = AppState.transactions.some(function(t){
+return t.recurRuleId === rule.id && t.date === thisDue;
+});
+if(!already){
 var tx = {
 id: String(Date.now())+'_r'+Math.random().toString(36).slice(2,6),
 type: rule.type === 'income' ? 'income' : 'expense',
@@ -6388,17 +6521,22 @@ merchantRaw: rule.name||'Auto-recurring',
 merchantNorm: rule.keyword || rule.name || 'auto',
 merchant: rule.name||'Auto-recurring',
 note: rule.note || 'Auto-generated recurring',
-date: txDate,
-mk: monthKey,
+date: thisDue,
+mk: thisDue.slice(0,7),
 recurRuleId: rule.id,
-sig: makeSig(txDate, rule.amount, rule.name)
+sig: makeSig(thisDue, rule.amount, rule.name)
 };
 AppState.transactions.unshift(tx);
 saveTxToDB(tx);
 changed = true;
-});
+}
+dueDate = calcNextDue(thisDue, rule.freq);
+rule.nextDue = dueDate;
+metaChanged = true;
+}
 });
 if(changed) lsSave();
+if(metaChanged) saveMeta();
 }
 function runRuleMatching(){
 var today = getTodayStr();
@@ -6614,9 +6752,9 @@ amount:     amt,
 category:   newCat,
 _updated_at: new Date().toISOString(),
 freq:       document.getElementById('rmod-freq').value,
-dayOfMonth: parseInt(document.getElementById('rmod-day').value)||null,
+dayOfMonth: (function(){ var v=parseInt(document.getElementById('rmod-day').value); return isFinite(v) ? Math.min(31, Math.max(1, v)) : null; })(),
 keyword:    document.getElementById('rmod-kw').value.trim().toLowerCase(),
-tolerance:  parseFloat(document.getElementById('rmod-tol').value)||10,
+tolerance:  Math.min(50, Math.max(0, parseFloat(document.getElementById('rmod-tol').value)||10)),
 active:     true,
 lastMatched:null
 };
@@ -6685,11 +6823,18 @@ function delRecurRule(id){
 var delId=id||_recurEditId;
 if(!delId)return;
 if(!confirm('Delete this recurring rule?'))return;
+var today=getTodayStr();
+var removedCount=0;
+AppState.transactions=AppState.transactions.filter(function(t){
+if(t.recurRuleId===delId && t.date>today){ removedCount++; return false; }
+return true;
+});
 AppState.recurRules=AppState.recurRules.filter(function(r){return r.id!==delId;});
 saveMeta();
+if(removedCount) lsSave();
 disableScrollLock();
 document.getElementById('rov').style.display='none';
-rRecurring();toast('Rule deleted');
+rRecurring();toast('Rule deleted'+(removedCount?' — removed '+removedCount+' upcoming transaction'+(removedCount>1?'s':''):''));
 }
 function toggleRecurActive(id){
 var rule=AppState.recurRules.find(function(r){return r.id===id;});
@@ -6784,16 +6929,24 @@ if (l.indexOf(key) >= 0) return BUDGET_IMPORT_MAP[key];
 }
 return '';
 }
+var _biTrigger = null;
+function closeBiOverlay() {
+disableScrollLock();
+document.getElementById('bi-overlay').style.display = 'none';
+if (_biTrigger && typeof _biTrigger.focus === 'function' && document.contains(_biTrigger)) _biTrigger.focus();
+_biTrigger = null;
+}
 function showBudgetMsg(msg, ok) {
 var overlay = document.getElementById('bi-overlay');
 var wizard  = document.getElementById('bi-wizard');
 if(overlay) overlay.style.display = 'block';
+if(!_biTrigger) _biTrigger = _captureFocusTrigger();
 if(wizard) wizard.innerHTML =
 '<div style="text-align:center;padding:48px var(--lg)">'
 +'<div style="font-size:42px;margin-bottom:var(--md)">'+(ok?'&#9989;':'&#10060;')+'</div>'
 +'<div style="font-size:var(--fs-cat-title);font-weight:800;color:'+(ok?'var(--em)':'var(--red)')+';margin-bottom:var(--sm)">'+(ok?'Success':'Import Error')+'</div>'
 +'<div style="font-size:var(--fs-subtext);color:var(--sub);margin-bottom:var(--lg)">'+msg+'</div>'
-+'<button class="sbtn" onclick="disableScrollLock();document.getElementById(\'bi-overlay\').style.display=\'none\'">Close</button>'
++'<button class="sbtn" onclick="closeBiOverlay()">Close</button>'
 +'</div>';
 var el = document.getElementById('bimsg');
 if(el){ el.style.display='block'; el.style.background=ok?'var(--embg)':'var(--redbg)'; el.style.color=ok?'var(--em)':'var(--red)'; el.innerHTML=msg; }
@@ -6802,6 +6955,7 @@ function budgetImportStep1(event) {
 dbg('budgetImportStep1 fired');
 var file = event.target.files[0];
 if (!file) { dbg('no file selected'); return; }
+_biTrigger = _captureFocusTrigger();
 enableScrollLock();
 dbg('file: ' + file.name);
 var overlay = document.getElementById('bi-overlay');
@@ -6821,7 +6975,7 @@ budgetParseXlsx(e.target.result);
 } else {
 try {
 var text = new TextDecoder().decode(e.target.result);
-var rows = text.split('\n').map(function(l){ return l.split(','); });
+var rows = window.parseCSVText(text);
 budgetShowColumnPicker(rows, file.name);
 } catch(err) { showBudgetMsg('Error: ' + err.message, false); }
 }
@@ -7273,8 +7427,8 @@ return '<div style="display:flex;align-items:center;justify-content:space-betwee
 }).join('')+'</div>'
 : ''
 )
-+'<button class="sbtn" style="font-size:var(--fs-row-label);" onclick="disableScrollLock();document.getElementById(\'bi-overlay\').style.display=\'none\';gp(\'Budget\',null);">&#128203; View My Budget &#8594;</button>'
-+'<button onclick="disableScrollLock();document.getElementById(\'bi-overlay\').style.display=\'none\';" style="width:100%;margin-top:var(--sm);padding:12px;background:none;border:none;font-size:var(--fs-subtext);color:var(--sub);cursor:pointer;font-family:inherit;">Close</button>';
++'<button class="sbtn" style="font-size:var(--fs-row-label);" onclick="closeBiOverlay();gp(\'Budget\',null);">&#128203; View My Budget &#8594;</button>'
++'<button onclick="closeBiOverlay();" style="width:100%;margin-top:var(--sm);padding:12px;background:none;border:none;font-size:var(--fs-subtext);color:var(--sub);cursor:pointer;font-family:inherit;">Close</button>';
 var overlayHeader = document.querySelector('#bi-overlay > div:first-child > div:first-child');
 if(overlayHeader) overlayHeader.innerHTML = '&#9989; Import Complete';
 var wizard = document.getElementById('bi-wizard');
@@ -7347,13 +7501,12 @@ AppState.budgets = newBudgets;
 AppState.budgetItems = newBudgetItems;
 saveMeta();
 window._budgetReviewGroups = null;
-disableScrollLock();
-document.getElementById('bi-overlay').style.display = 'none';
+closeBiOverlay();
 gp('Budget', null);
 toast('Imported ' + applied + ' categories — all 12 months loaded');
 }
 function budgetShowWizard(rows, fname) {
-_biRows = rows;
+_biRows = rows.slice(1); // drop the header row — only the preview table below needs it
 document.getElementById('bi-fname').textContent = fname;
 document.getElementById('bi-rowcount').textContent = rows.length + ' rows found';
 var maxCols = 0;
@@ -7427,7 +7580,7 @@ var seen = {};
 _biRows.forEach(function(row, i) {
 var label = String(row[_biLabelCol] || '').trim();
 var rawAmt = row[_biAmtCol];
-var amt = parseFloat(rawAmt);
+var amt = window.normalizeAmount(rawAmt);
 if (!label || label.length < 2) return;
 if (isNaN(amt) || amt <= 0) return;
 if (label.toLowerCase() === 'total' || label.toLowerCase() === 'totals') return;
@@ -7490,8 +7643,7 @@ AppState.budgets[cat] = items.reduce(function(s,it){ return s + it.amount; }, 0)
 }
 }
 saveMeta();
-disableScrollLock();
-document.getElementById('bi-overlay').style.display = 'none';
+closeBiOverlay();
 gp('Budget', null);
 toast('Budget imported — ' + applied + ' line items applied');
 }
@@ -7549,6 +7701,7 @@ if(!g) return;
 if(AppState.budgets[oldCat]){ AppState.budgets[newCat]=AppState.budgets[oldCat]; delete AppState.budgets[oldCat]; }
 if(AppState.budgetItems[oldCat]){ AppState.budgetItems[newCat]=AppState.budgetItems[oldCat]; delete AppState.budgetItems[oldCat]; }
 AppState.transactions.forEach(function(t){ if(t.category===oldCat) t.category=newCat; });
+cascadeCategoryRename(oldCat, newCat);
 var idx=g.cats.indexOf(oldCat); if(idx>=0) g.cats[idx]=newCat;
 lsSave(); saveMeta(); rBudget();
 });
@@ -7782,20 +7935,33 @@ function inpCancel() {
 document.getElementById('inp-ov').style.display = 'none';
 _inpCb = null;
 }
+var _cfmTrigger = null;
 function showCfm(msg, okLabel, cb) {
 document.getElementById('cfm-msg').textContent = msg;
 document.getElementById('cfm-ok').textContent = okLabel || 'Delete';
 document.getElementById('cfm-ok').style.background = (okLabel && okLabel !== 'Delete') ? 'var(--gd)' : 'var(--red)';
 _cfmCb = cb;
+_cfmTrigger = _captureFocusTrigger();
+enableScrollLock();
 document.getElementById('cfm-ov').style.display = 'flex';
+var cancelBtn = document.getElementById('cfm-cancel');
+if (cancelBtn) cancelBtn.focus();
+}
+function _cfmRestoreFocus() {
+if (_cfmTrigger && typeof _cfmTrigger.focus === 'function' && document.contains(_cfmTrigger)) _cfmTrigger.focus();
+_cfmTrigger = null;
 }
 function cfmConfirm() {
 document.getElementById('cfm-ov').style.display = 'none';
+disableScrollLock();
+_cfmRestoreFocus();
 if (_cfmCb) _cfmCb();
 _cfmCb = null;
 }
 function cfmCancel() {
 document.getElementById('cfm-ov').style.display = 'none';
+disableScrollLock();
+_cfmRestoreFocus();
 _cfmCb = null;
 }
 // --- Bulk category update ---
@@ -8568,7 +8734,9 @@ var _gcmOldCat       = null;
 var _gcmNewCat       = null;
 var _gcmOriginalGoal = null;
 
+var _gcmTrigger = null;
 function openGoalCategoryModal(g, oldCat, newCat, originalGoal) {
+_gcmTrigger = _captureFocusTrigger();
 _gcmGoal         = g;
 _gcmOldCat       = oldCat;
 _gcmNewCat       = newCat;
@@ -8584,10 +8752,14 @@ var msg = 'Changed linked category for <strong>'+esc(g.name)+'</strong>'
 : 'Apply this category to all goals currently sharing this link?');
 document.getElementById('gcm-msg').innerHTML = msg;
 document.getElementById('gcm-ov').style.display = 'flex';
+var gcmCancelBtn = document.getElementById('gcm-cancel-btn');
+if (gcmCancelBtn) gcmCancelBtn.focus();
 }
 function closeGoalCategoryModal() {
 document.getElementById('gcm-ov').style.display = 'none';
 _gcmGoal = null; _gcmOldCat = null; _gcmNewCat = null; _gcmOriginalGoal = null;
+if (_gcmTrigger && typeof _gcmTrigger.focus === 'function' && document.contains(_gcmTrigger)) _gcmTrigger.focus();
+_gcmTrigger = null;
 }
 function onGoalBulkUpdateAll() {
 if (!_gcmGoal) return;
@@ -8650,13 +8822,21 @@ var _bulkUnifiedCtx = null;
 var _bulkCatCtx     = null;
 var _bulkBillCatCtx = null;
 
+var _bulkUnifiedTrigger = null;
 function _showBulkUnified(title, allLabel, oneLabel, msg, onAll, onYear, onOne, onCancel) {
 _bulkUnifiedCtx = { onAll:onAll, onYear:onYear, onOne:onOne, onCancel:onCancel };
+_bulkUnifiedTrigger = _captureFocusTrigger();
 document.getElementById('bulk-unified-title').textContent = title;
 document.getElementById('bulk-unified-all').textContent   = allLabel;
 document.getElementById('bulk-unified-one').textContent   = oneLabel;
 document.getElementById('bulk-unified-msg').innerHTML     = msg;
 document.getElementById('bulk-unified-ov').style.display  = 'flex';
+var firstBtn = document.getElementById('bulk-unified-all');
+if (firstBtn) firstBtn.focus();
+}
+function _bulkUnifiedRestoreFocus() {
+if (_bulkUnifiedTrigger && typeof _bulkUnifiedTrigger.focus === 'function' && document.contains(_bulkUnifiedTrigger)) _bulkUnifiedTrigger.focus();
+_bulkUnifiedTrigger = null;
 }
 
 function showBulkCatModal(merchantNorm, display, newCat, oldCat, count, onAll, onYear, onOne, onCancel) {
@@ -8679,6 +8859,7 @@ msg, onAll, onYear, onOne, onCancel);
 
 function bulkUnifiedConfirm(scope) {
 document.getElementById('bulk-unified-ov').style.display = 'none';
+_bulkUnifiedRestoreFocus();
 if (!_bulkUnifiedCtx) return;
 var ctx = _bulkUnifiedCtx; _bulkUnifiedCtx = null;
 if      (scope==='all')  { if (ctx.onAll)  ctx.onAll();  }
@@ -8687,6 +8868,7 @@ else                      { if (ctx.onOne)  ctx.onOne();  }
 }
 function bulkUnifiedCancel() {
 document.getElementById('bulk-unified-ov').style.display = 'none';
+_bulkUnifiedRestoreFocus();
 if (!_bulkUnifiedCtx) return;
 var ctx = _bulkUnifiedCtx; _bulkUnifiedCtx = null;
 if (ctx.onCancel) ctx.onCancel();
@@ -8697,6 +8879,18 @@ function bulkCatCancel()        { bulkUnifiedCancel(); }
 function bulkBillCatConfirm(s) { bulkUnifiedConfirm(s); }
 function bulkBillCatCancel()    { bulkUnifiedCancel(); }
 
+function cascadeCategoryRename(oldCat, newCat){
+if(!oldCat || !newCat || oldCat===newCat) return;
+(AppState.recurRules||[]).forEach(function(r){ if(r.category===oldCat) r.category=newCat; });
+(AppState.goals||[]).forEach(function(g){ if(g.linkedCat===oldCat) g.linkedCat=newCat; });
+}
+function cascadeCategoryRemoval(cat, fallback){
+fallback = fallback || 'Other';
+if(!cat || cat===fallback) return;
+AppState.transactions.forEach(function(t){ if(t.category===cat) t.category=fallback; });
+(AppState.recurRules||[]).forEach(function(r){ if(r.category===cat) r.category=fallback; });
+(AppState.goals||[]).forEach(function(g){ if(g.linkedCat===cat) g.linkedCat=fallback; });
+}
 function budgetRenameGroup(gid) {
 var g = BUDGET_GROUPS.find(function(x){ return x.id === gid; });
 if (!g) return;
@@ -8710,10 +8904,14 @@ var g = BUDGET_GROUPS.find(function(x){ return x.id === gid; });
 if (!g) return;
 showCfm('Delete "' + g.label + '" and all its categories?', 'Delete', function() {
 pushSnapshot('Delete group');
-g.cats.forEach(function(cat){ delete AppState.budgets[cat]; delete AppState.budgetItems[cat]; });
+g.cats.forEach(function(cat){
+delete AppState.budgets[cat];
+delete AppState.budgetItems[cat];
+if(gid !== 'other') cascadeCategoryRemoval(cat, 'Other');
+});
 delete AppState.budgets['__group_' + gid];
 BUDGET_GROUPS = BUDGET_GROUPS.filter(function(x){ return x.id !== gid; });
-saveMeta(); rBudget();
+lsSave(); saveMeta(); rBudget();
 });
 }
 function budgetAddGroup() {
@@ -8732,6 +8930,7 @@ if (newCat === oldCat) return;
 if (AppState.budgets[oldCat]) { AppState.budgets[newCat] = AppState.budgets[oldCat]; delete AppState.budgets[oldCat]; }
 if (AppState.budgetItems[oldCat]) { AppState.budgetItems[newCat] = AppState.budgetItems[oldCat]; delete AppState.budgetItems[oldCat]; }
 AppState.transactions.forEach(function(t){ if(t.category===oldCat) t.category=newCat; });
+cascadeCategoryRename(oldCat, newCat);
 var idx = g.cats.indexOf(oldCat);
 if (idx >= 0) g.cats[idx] = newCat;
 lsSave(); saveMeta(); rBudget();
@@ -8744,7 +8943,8 @@ pushSnapshot('Delete category');
 g.cats = g.cats.filter(function(c){ return c !== cat; });
 delete AppState.budgets[cat];
 delete AppState.budgetItems[cat];
-saveMeta(); rBudget();
+if(gid !== 'other') cascadeCategoryRemoval(cat, 'Other');
+lsSave(); saveMeta(); rBudget();
 }
 function budgetAddCat(gid) {
 var g = BUDGET_GROUPS.find(function(x){ return x.id === gid; });
@@ -8774,6 +8974,7 @@ var it = items[idx];
 var curAmt = it.amounts ? (it.amounts[cM]||0) : (it.amount||0);
 showInpPrefill('Edit "' + it.label + '"', it.label, function(newLabel, newAmt) {
 var amt = parseFloat(newAmt);
+if (!isNaN(amt) && amt < 0) { toast('Invalid amount'); return; }
 var newItem = { label: newLabel || it.label, amounts: it.amounts ? it.amounts.slice() : Array(12).fill(curAmt) };
 if (!isNaN(amt)) {
 if (!newItem.amounts) newItem.amounts = Array(12).fill(0);
@@ -9008,7 +9209,10 @@ budgets: AppState.budgets,
 budgetItems: AppState.budgetItems,
 recurRules: AppState.recurRules,
 merchantMem: AppState.merchantMem,
-budgetGroups: BUDGET_GROUPS
+budgetGroups: BUDGET_GROUPS,
+assets: AppState.assets,
+liabilities: AppState.liabilities,
+customCats: AppState.customCats
 };
 var blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
 var url=URL.createObjectURL(blob);
@@ -9060,12 +9264,14 @@ if(dy >= THRESHOLD){
 refreshing = true;
 ptr.className = 'refreshing';
 ptrText.textContent = 'Refreshing…';
+if(navigator.vibrate) navigator.vibrate(10);
 setTimeout(function(){
-try{ renderAll(); } catch(e){}
+try{ if(typeof autoGenerateRecurring==='function') autoGenerateRecurring(); renderAll(); } catch(e){}
 ptr.className = '';
 ptrText.textContent = 'Pull to refresh';
 refreshing = false;
 startY = 0; currentY = 0;
+toast('Refreshed');
 }, 800);
 } else {
 ptr.className = '';
@@ -9144,7 +9350,11 @@ var CAT_PRESETS={
 'Side Income':[0,300,1000],'Other Income':[0,150,500]
 };
 var _bsetupStep=0,_bsetupDir='forward';
+var _bsetupTrigger = null;
 function bsetupOpen(){
+var panelAlreadyOpen = document.getElementById('bsetup-ov') && document.getElementById('bsetup-ov').classList.contains('open');
+if(panelAlreadyOpen){ dbg('[BSETUP] Already open — ignoring duplicate open call'); return; }
+_bsetupTrigger = _captureFocusTrigger();
 enableScrollLock();
 _bsetupStep=0;
 _bsetupDir='forward';
@@ -9152,14 +9362,18 @@ var backdrop=document.getElementById('bsetup-backdrop');
 if(backdrop){backdrop.classList.add('open');}
 document.getElementById('bsetup-ov').classList.add('open');
 bsetupRender();
+setTimeout(function(){ var closeBtn=document.querySelector('.bsheet-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 dbg('[BSETUP] Panel opened at step '+_bsetupStep);
 }
 function bsetupClose(){
+bsetupSave();
 disableScrollLock();
 var panel=document.getElementById('bsetup-ov');
 if(panel)panel.classList.remove('open');
 var backdrop=document.getElementById('bsetup-backdrop');
 if(backdrop)backdrop.classList.remove('open');
+if (_bsetupTrigger && typeof _bsetupTrigger.focus === 'function' && document.contains(_bsetupTrigger)) _bsetupTrigger.focus();
+_bsetupTrigger = null;
 dbg('[BSETUP] Panel closed');
 }
 function bsetupNext(){
@@ -9176,6 +9390,7 @@ bsetupShowCompletion();
 }
 }
 function bsetupSkip(){
+bsetupSave();
 if(_bsetupStep<BSETUP_STEPS.length-1){
 _bsetupStep++;
 _bsetupDir='forward';
@@ -9193,8 +9408,10 @@ var inp=document.getElementById('bsc-inp-'+cat.replace(/[^a-zA-Z0-9]/g,'_'));
 if(!inp)return;
 var val=parseFloat(inp.value)||0;
 if(step.isIncome){
-var items=AppState.budgetItems['__income__']||[];
-items.forEach(function(it){if(it.label===cat){it.amounts=Array(12).fill(val);it.yearlyTotal=val*12;}});
+var items=AppState.budgetItems['__income__']||(AppState.budgetItems['__income__']=[]);
+var existing=items.find(function(it){return it.label===cat;});
+if(existing){existing.amounts=Array(12).fill(val);existing.yearlyTotal=val*12;}
+else if(val>0){items.push({label:cat,amounts:Array(12).fill(val),owner:'Combined',yearlyTotal:val*12});}
 } else {
 AppState.budgets[cat]=val;
 if(AppState.budgetItems[cat]&&AppState.budgetItems[cat][0]){
@@ -9263,7 +9480,7 @@ function computeBudgetHealth(){
 var incItems=AppState.budgetItems['__income__']||[];
 var income=incItems.reduce(function(s,it){return s+((it.amounts&&it.amounts[0])||0);},0);
 var totalBudget=Object.keys(AppState.budgets).reduce(function(s,cat){return s+(AppState.budgets[cat]||0);},0);
-if(totalBudget===0)return{score:50,label:'Solid',cls:'bhealth-solid'};
+if(totalBudget===0)return{score:0,label:'&#9888; Not Set Up',cls:'bhealth-risk',income:income,totalBudget:0};
 var score=50;
 if(income>0){var sr=(income-totalBudget)/income;if(sr>=0.20)score+=30;else if(sr>=0.10)score+=20;else if(sr>=0)score+=10;}
 else score+=10;
@@ -9319,7 +9536,7 @@ return '<div class="g-ring-wrap" style="width:'+size+'px;height:'+size+'px"><svg
 function goalPaceHtml(g){
 if((g.saved||0)>=(g.target||1))return'<span class="gpace done">&#127881; Done!</span>';
 if(!g.targetDate)return'';
-var now=new Date(),end=new Date(g.targetDate);
+var now=new Date(),end=new Date(g.targetDate+'T00:00:00');
 var monthsLeft=Math.max(0,(end.getFullYear()-now.getFullYear())*12+(end.getMonth()-now.getMonth()));
 if(monthsLeft<=0)return'<span class="gpace behind">Past deadline</span>';
 var needed=(g.target-(g.saved||0))/monthsLeft;
@@ -9332,7 +9549,7 @@ return'<span class="gpace '+cls+'">'+label+'</span> <span style="font-size:var(-
 function goalHealthScore(g){
 var pct=g.target>0?Math.min((g.saved||0)/g.target*100,100):0;
 var score=40+Math.round(pct*0.4);
-if(g.targetDate){var now=new Date(),end=new Date(g.targetDate),start=new Date(g.createdAt||now);
+if(g.targetDate){var now=new Date(),end=new Date(g.targetDate+'T00:00:00'),start=new Date(g.createdAt||now);
 var totalMo=Math.max(1,(end-start)/(30*24*3600*1000)),elapsed=Math.max(0,(now-start)/(30*24*3600*1000));
 if(pct>=elapsed/totalMo*100)score+=20;else if(pct>=elapsed/totalMo*70)score+=10;}
 else score+=10;
@@ -9388,8 +9605,8 @@ return;
 }
 if(typeof rGoalDashboard === 'function') { try { rGoalDashboard(); return; } catch(e) { dbg('[rGoalDashboard] err: '+e.message); } }
 var goals=AppState.goals||[];
-var totalTarget=goals.reduce(function(s,g){return s+(g.target||0);},0);
-var totalSaved=goals.reduce(function(s,g){return s+(g.saved||0);},0);
+var totalTarget=Math.round(goals.reduce(function(s,g){return s+(g.target||0);},0)*100)/100;
+var totalSaved=Math.round(goals.reduce(function(s,g){return s+(g.saved||0);},0)*100)/100;
 var done=goals.filter(function(g){return(g.saved||0)>=(g.target||0);}).length;
 var s2=document.getElementById('gsumm2');
 if(s2)s2.innerHTML=goals.length?'<div class="gsumm2-i"><div class="gsumm2-v" style="color:#1A8A4D">'+fmt(totalSaved)+'</div><div class="gsumm2-l">Total Saved</div></div><div class="gsumm2-i"><div class="gsumm2-v">'+fmt(totalTarget)+'</div><div class="gsumm2-l">Total Target</div></div><div class="gsumm2-i"><div class="gsumm2-v" style="color:#1A1A1A">'+done+'</div><div class="gsumm2-l">Completed</div></div>':'';
@@ -14093,6 +14310,8 @@ var notesEl  = document.getElementById('ges-notes');
 var name = (nameEl ? nameEl.value.trim() : '') || g.name;
 var target = parseFloat(targetEl ? targetEl.value : g.target) || g.target;
 var saved  = parseFloat(savedEl  ? savedEl.value  : g.saved)  || 0;
+if (!target || target <= 0) { toast('Enter a valid goal target amount.'); return; }
+if (saved < 0) { toast('Saved amount cannot be negative.'); return; }
 var targetDate = dateEl  ? (dateEl.value  || null) : g.targetDate;
 var linkedCat  = catEl   ? (catEl.value   || null) : g.linkedCat;
 var notes      = notesEl ? (notesEl.value.trim() || null) : (g.notes || null);
@@ -15187,6 +15406,12 @@ var last = parseInt(sessionStorage.getItem(key)||'0', 10);
 if (Date.now() - last > 60000) {
 sessionStorage.setItem(key, String(Date.now()));
 setTimeout(function(){ showGoalCelebration(goalId); }, 500);
+if (typeof writeNotification === 'function') {
+writeNotification('goal_completed', 'Goal completed', (g && g.name ? '"' + g.name + '" ' : 'A goal ') + 'was fully funded!', null);
+}
+if (typeof triggerWebhookEvent === 'function') {
+triggerWebhookEvent('goal_completed', { goalId: goalId, name: g && g.name, target: target });
+}
 }
 }
 }
@@ -15566,7 +15791,7 @@ var contrib={id:String(Date.now()),amount:amt,date:new Date().toISOString().spli
 g.contributions=g.contributions||[];g.contributions.push(contrib);
 g.saved=Math.round(((g.saved||0)+amt)*100)/100;
 AppState.transactions.unshift({id:'gtx_'+contrib.id,type:'expense',amount:amt,category:'Savings',merchantRaw:'Goal: '+g.name,merchantNorm:'Goal Contribution',merchant:'Goal Contribution',note:g.name,date:contrib.date,mk:contrib.date.slice(0,7),sig:contrib.date+'_'+amt+'_GOALCONTRIB'});
-saveGoalToDB(g);lsSave();rGoals();toast('\u2728 +'+fmt(amt)+' added to '+g.name+'!');
+saveGoalToDB(g);lsSave();rGoals();toast('\u2728 +'+fmt(amt)+' added to '+esc(g.name)+'!');
 if(typeof checkGoalCelebrations==='function') checkGoalCelebrations(id);
 }
 function delGoal(id){
@@ -15604,13 +15829,27 @@ var y = parseInt(parts[0]);
 var m = parseInt(parts[1])-1; // Month is 0-indexed
 var d = parseInt(parts[2]);
 if(isNaN(y) || isNaN(m) || isNaN(d)) return null;
-var nextDate = new Date(y, m, d);
+var nextDate;
 switch(freq||'monthly'){
-case 'weekly': nextDate.setDate(nextDate.getDate()+7); break;
-case 'biweekly': nextDate.setDate(nextDate.getDate()+14); break;
-case 'quarterly': nextDate.setMonth(nextDate.getMonth()+3); break;
-case 'annual': nextDate.setFullYear(nextDate.getFullYear()+1); break;
-default: nextDate.setMonth(nextDate.getMonth()+1); break;
+case 'weekly': nextDate = new Date(y, m, d); nextDate.setDate(nextDate.getDate()+7); break;
+case 'biweekly': nextDate = new Date(y, m, d); nextDate.setDate(nextDate.getDate()+14); break;
+case 'quarterly': {
+var qm = m+3, qy = y + Math.floor(qm/12); qm = ((qm%12)+12)%12;
+var qMaxDay = new Date(qy, qm+1, 0).getDate();
+nextDate = new Date(qy, qm, Math.min(d, qMaxDay));
+break;
+}
+case 'annual': {
+var aMaxDay = new Date(y+1, m+1, 0).getDate();
+nextDate = new Date(y+1, m, Math.min(d, aMaxDay));
+break;
+}
+default: {
+var nm = m+1, ny = y + Math.floor(nm/12); nm = ((nm%12)+12)%12;
+var maxDay = new Date(ny, nm+1, 0).getDate();
+nextDate = new Date(ny, nm, Math.min(d, maxDay));
+break;
+}
 }
 return getLocalDateStr(nextDate);
 }
@@ -15662,7 +15901,7 @@ var today=getTodayStr();rule.lastPaid=today;
 if(rule.nextDue){var newNextDue=calcNextDue(rule.nextDue,rule.freq);if(newNextDue)rule.nextDue=newNextDue;}
 rule.payHistory=rule.payHistory||[];rule.payHistory.push({date:today,amount:rule.amount});
 AppState.transactions.unshift({id:'bill_'+Date.now(),type:'expense',amount:rule.amount,category:rule.category||'Bills',merchantRaw:rule.name,merchantNorm:rule.name,merchant:rule.name,note:'Bill payment',date:today,mk:today.slice(0,7),sig:today+'_'+rule.amount+'_BILL_'+rule.id});
-saveMeta();lsSave();rRecurring();toast('&#10003; '+rule.name+' marked as paid!');
+saveMeta();lsSave();rRecurring();toast('&#10003; '+esc(rule.name)+' marked as paid!');
 var card=document.querySelector('[data-bill-id="'+id+'"]');if(card){card.classList.remove('paid-flash');void card.offsetWidth;card.classList.add('paid-flash');}
 }
 function showBillDetail(id){
@@ -15683,7 +15922,9 @@ ov.style.cssText='position:fixed;inset:0;z-index:7600;background:var(--bg);overf
 ov.innerHTML=html;document.body.appendChild(ov);
 }
 var _bcStep=0,_bcDir='forward',_bcDraft={name:'',amount:0,cat:'',freq:'monthly',day:1,keyword:'',autoPay:false};
+var _bcTrigger = null;
 function bcreateOpen(suggestion){
+_bcTrigger = _captureFocusTrigger();
 enableScrollLock();
 _bcDraft=suggestion?{name:suggestion.name||'',amount:suggestion.amt||0,cat:suggestion.cat||'',freq:suggestion.freq||'monthly',day:1,keyword:'',autoPay:false}:{name:'',amount:0,cat:'',freq:'monthly',day:1,keyword:'',autoPay:false};
 var cats=CATS&&CATS.expense?CATS.expense:[];
@@ -15702,6 +15943,8 @@ document.getElementById('bcreate-ov').classList.add('open');
 function bcreateClose(){
 disableScrollLock();
 document.getElementById('bcreate-ov').classList.remove('open');
+if (_bcTrigger && typeof _bcTrigger.focus === 'function' && document.contains(_bcTrigger)) _bcTrigger.focus();
+_bcTrigger = null;
 }
 function bcToggleAutopay(){var sw=document.getElementById('bc-autopay-sw');if(sw)sw.classList.toggle('on');}
 
@@ -15735,7 +15978,7 @@ saveMeta();
 lsSave();
 bcreateClose();
 rRecurring();
-toast('&#128184; '+rule.name+' added!');
+toast('&#128184; '+esc(rule.name)+' added!');
 }
 function rBillsSuggestions(){
 return'<div class="stitle">Common Bills</div><div class="b-suggest-grid">'+BILL_SUGGESTIONS.map(function(s){
@@ -16241,9 +16484,11 @@ return null;
 }
 var _catPickerTxId = null;
 var _catPickerCb   = null;
+var _catPickerTrigger = null;
 function catPickerOpen(txId, currentCat, cb) {
 _catPickerTxId = txId;
 _catPickerCb   = cb;
+_catPickerTrigger = _captureFocusTrigger();
 catPickerRender(currentCat, '');
 document.getElementById('catpicker-ov').classList.add('open');
 var s = document.getElementById('catpicker-search');
@@ -16252,6 +16497,8 @@ if(s){ s.value=''; setTimeout(function(){ s.focus(); }, 120); }
 function catPickerClose() {
 document.getElementById('catpicker-ov').classList.remove('open');
 _catPickerTxId = null; _catPickerCb = null;
+if (_catPickerTrigger && typeof _catPickerTrigger.focus === 'function' && document.contains(_catPickerTrigger)) _catPickerTrigger.focus();
+_catPickerTrigger = null;
 }
 function catPickerFilter(q) { catPickerRender(null, q||''); }
 function catPickerRender(selectedCat, q) {
@@ -16308,9 +16555,11 @@ if(rowEl){ rowEl.classList.remove('tx-cat-changed'); void rowEl.offsetWidth; row
 }
 if(cb) cb(cat);
 }
+var _txDetailTrigger = null;
 function showTxDetail(id) {
 var tx = (AppState.transactions||[]).find(function(t){return t.id===id;});
 if(!tx) return;
+_txDetailTrigger = _captureFocusTrigger();
 var cr       = catForTx(tx);
 var isDup    = isDuplicateTx(tx);
 var recur    = detectRecurring(tx);
@@ -16386,10 +16635,13 @@ sheet.innerHTML = html;
 var ov = document.getElementById('txdetail-ov');
 enableScrollLock();
 ov.classList.add('open');
+setTimeout(function(){ sheet.focus(); }, 50);
 }
 function closeTxDetail() {
 disableScrollLock();
 document.getElementById('txdetail-ov').classList.remove('open');
+if (_txDetailTrigger && typeof _txDetailTrigger.focus === 'function' && document.contains(_txDetailTrigger)) _txDetailTrigger.focus();
+_txDetailTrigger = null;
 }
 function catWhyTooltip(txId, btn) {
 var tx = (AppState.transactions||[]).find(function(t){return t.id===txId;});
@@ -16467,6 +16719,16 @@ if(_prefs.fontSize) applyFontSizeCss(_prefs.fontSize);
 document.body.classList.toggle('hi-contrast', !!_prefs.highContrast);
 if(_prefs.reduceMotion) document.body.style.setProperty('--reduce-motion','1');
 else document.body.style.removeProperty('--reduce-motion');
+// Restore dark/light theme from persisted prefs — nothing else in the boot
+// sequence applies the 'dim' class the whole dark-mode CSS system keys off,
+// so without this, dark mode silently reverted to light on every reload.
+if(_prefs.theme==='dim') document.body.classList.add('dim');
+else if(_prefs.theme==='auto') {
+var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme:dark)').matches;
+document.body.classList.toggle('dim', !!prefersDark);
+} else if(_prefs.theme==='light') {
+document.body.classList.remove('dim');
+}
 }
 function applyAccentCss(accent) {
 var c = ACCENT_COLORS[accent];
@@ -16768,16 +17030,20 @@ return '<div class="an-cf-row'+(item.isNet?' '+((net>=0)?'':'risk'):'')+'">'
 +(riskDays.length?'<div style="font-size:var(--fs-caption);color:'+(net>=0?'var(--em)':'var(--red)')+';padding-top:var(--xs);font-style:italic;">'+riskDays[0]+'</div>':'')
 +'</div>';
 }
+var _anCatTrigger = null;
 function closeAnCatDetail() {
 disableScrollLock();
 var ov = document.getElementById('an-cat-ov');
 if(ov) {
 ov.classList.remove('open');
 }
+if (_anCatTrigger && typeof _anCatTrigger.focus === 'function' && document.contains(_anCatTrigger)) _anCatTrigger.focus();
+_anCatTrigger = null;
 }
 function showAnCatDetail(cat) {
 var ov = document.getElementById('an-cat-ov');
 if(!ov) return;
+_anCatTrigger = _captureFocusTrigger();
 var txs = mTx();
 var allTxs = AppState.transactions||[];
 var catTxs = txs.filter(function(t){return t.type==='expense'&&t.category===cat;});
@@ -16824,6 +17090,7 @@ return'<div style="display:flex;justify-content:space-between;align-items:center
 ov.innerHTML = html;
 enableScrollLock();
 ov.classList.add('open');
+setTimeout(function(){ var closeBtn=ov.querySelector('button[aria-label="Close"]'); if(closeBtn) closeBtn.focus(); }, 50);
 }
 function anBuild6MonthCatChart(cat) {
 var months = anLastNMonths(6);
@@ -16852,9 +17119,18 @@ return '<div class="an-line-chart-wrap">'
 +'<div class="an-sparkbar-lbl" style="position:relative;height:14px;">'+labelHtml+'</div>'
 +'</div>';
 }
+var _anMerchTrigger = null;
+function closeAnMerchDetail() {
+disableScrollLock();
+var ov = document.getElementById('an-merch-ov');
+if(ov) ov.classList.remove('open');
+if (_anMerchTrigger && typeof _anMerchTrigger.focus === 'function' && document.contains(_anMerchTrigger)) _anMerchTrigger.focus();
+_anMerchTrigger = null;
+}
 function showAnMerchDetail(merchant) {
 var ov = document.getElementById('an-merch-ov');
 if(!ov) return;
+_anMerchTrigger = _captureFocusTrigger();
 var txs = (AppState.transactions||[]).filter(function(t){
 return (t.merchantNorm||t.merchantRaw||t.merchant||'')===merchant;
 });
@@ -16866,7 +17142,7 @@ var recur = txs.length>1 ? detectRecurring ? detectRecurring(txs[0]) : null : nu
 var html = '<div class="bsheet"><div class="bsheet-handle"></div><div style="max-width:430px;margin:0 auto">'
 +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--md)">'
 +'<div style="font-size:var(--fs-subtext);font-weight:800">'+esc(merchant)+'</div>'
-+'<button onclick="disableScrollLock();document.getElementById(\'an-merch-ov\').classList.remove(\'open\')" style="background:var(--card2);border:none;border-radius:50%;width:30px;height:30px;font-size:16px;cursor:pointer;color:var(--sub);display:flex;align-items:center;justify-content:center;">&#10005;</button>'
++'<button onclick="closeAnMerchDetail()" style="background:var(--card2);border:none;border-radius:50%;width:30px;height:30px;font-size:16px;cursor:pointer;color:var(--sub);display:flex;align-items:center;justify-content:center;">&#10005;</button>'
 +'</div>'
 +'<div class="an-metric-grid">'
 +'<div class="an-metric-i"><div class="an-metric-v" style="color:var(--red)">'+fmt(total)+'</div><div class="an-metric-l">Total Spent</div></div>'
@@ -16884,13 +17160,14 @@ return'<div style="display:flex;justify-content:space-between;padding:8px 0;bord
 }).join('')
 +'</div>'
 +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sm)">'
-+(recur?'<button class="bsetup-btn primary" onclick="autoAddRecurFromTx(\''+txs[0].id+'\');disableScrollLock();document.getElementById(\'an-merch-ov\').classList.remove(\'open\');" style="font-size:var(--fs-caption);">&#128260; Mark Recurring</button>':'<div></div>')
-+'<button class="bsetup-btn secondary" onclick="disableScrollLock();document.getElementById(\'an-merch-ov\').classList.remove(\'open\')" style="font-size:var(--fs-caption);">Close</button>'
++(recur?'<button class="bsetup-btn primary" onclick="autoAddRecurFromTx(\''+txs[0].id+'\');closeAnMerchDetail();" style="font-size:var(--fs-caption);">&#128260; Mark Recurring</button>':'<div></div>')
++'<button class="bsetup-btn secondary" onclick="closeAnMerchDetail()" style="font-size:var(--fs-caption);">Close</button>'
 +'</div>'
 +'</div></div>';
 ov.innerHTML = html;
 enableScrollLock();
 ov.classList.add('open');
+setTimeout(function(){ var closeBtn=ov.querySelector('button'); if(closeBtn) closeBtn.focus(); }, 50);
 }
 function injectAnalyticsEnhancements() {
 var ancont = document.getElementById('ancont');
@@ -17282,7 +17559,9 @@ return '<div class="recur-detected-banner">'
 +'</div>';
 }
 function createRuleFromPattern(encoded) {
-var p = JSON.parse(decodeURIComponent(encoded));
+var p;
+try { p = JSON.parse(decodeURIComponent(encoded)); }
+catch(e) { toast('&#9888; Could not create rule — pattern data was corrupted.'); return; }
 var nextDue = calcNextDue ? calcNextDue(p.lastDate, p.frequency) : p.lastDate;
 pushSnapshot('Create recurring rule from pattern');
 AppState.recurRules = AppState.recurRules||[];
@@ -17658,6 +17937,13 @@ dbg('[loadCurrentUserRole] error: ' + e.message);
 return null;
 }
 }
+// Re-check role on tab focus so a demotion/removal made from another device
+// or tab doesn't leave a stale owner-level UI visible indefinitely.
+document.addEventListener('visibilitychange', function(){
+if(!document.hidden && _v2User && _v2Household) {
+loadCurrentUserRole().then(function(){ if(typeof hhRenderSettings === 'function') hhRenderSettings(); });
+}
+}, false);
 function canWrite() {
 var r = AppState.currentUserRole;
 return r === 'owner' || r === 'member';
@@ -17861,15 +18147,20 @@ if(!btn) return;
 btn.disabled = loading;
 btn.style.opacity = loading ? '0.6' : '1';
 }
+var _authTrigger = null;
 function authShowOverlay() {
+_authTrigger = _captureFocusTrigger();
 enableScrollLock();
 var ov = document.getElementById('auth-ov');
 if(ov) { ov.classList.add('open'); authShowView('login'); }
+setTimeout(function(){ var emailEl=document.getElementById('auth-login-email'); if(emailEl) emailEl.focus(); }, 50);
 }
 function authHideOverlay() {
 disableScrollLock();
 var ov = document.getElementById('auth-ov');
 if(ov) ov.classList.remove('open');
+if (_authTrigger && typeof _authTrigger.focus === 'function' && document.contains(_authTrigger)) _authTrigger.focus();
+_authTrigger = null;
 }
 function authContinueGuest() {
 _v2GuestMode = true;
@@ -17970,8 +18261,10 @@ dbg('[V2] forgotPw error: '+e.message);
 }
 authSetLoading('auth-forgot-btn', false);
 }
+var _localSignOutInFlight = false;
 async function authSignOut() {
 var sb = sbInit();
+_localSignOutInFlight = true;
 setSyncStatus('offline','Offline');
 if(sb) {
 try { await sb.auth.signOut(); } catch(e){ dbg('[V2] signOut error: '+e.message); }
@@ -17982,6 +18275,7 @@ safeSet(V2_GUEST_KEY, '0');
 toast('Signed out.');
 authShowOverlay();
 dbg('[V2] Signed out');
+_localSignOutInFlight = false;
 }
 async function v2RestoreSession() {
 var sb = sbInit();
@@ -17998,6 +18292,100 @@ return true;
 } catch(e) { dbg('[V2] restoreSession error: '+e.message); }
 return false;
 }
+// ── App Switcher privacy blur + idle re-entry lock ──────────────────────────
+// Two independent protections for a finance app on a shared/lost device:
+// 1) blur financial content the instant the OS takes an app-switcher snapshot
+// 2) require the account password again after N minutes of inactivity
+var _lockTimeoutMs  = 5*60*1000; // 5 minutes idle
+var _lockLastActive = Date.now();
+var _lockHiddenAt   = null;
+var _lockIsShown    = false;
+function _lockEligible() {
+return !!(_v2User && !_v2GuestMode && !_localSignOutInFlight);
+}
+function bwMarkActivity() {
+_lockLastActive = Date.now();
+}
+['mousedown','keydown','touchstart','scroll'].forEach(function(ev){
+document.addEventListener(ev, bwMarkActivity, {passive:true});
+});
+function bwApplyBlur(on) {
+var shell = document.getElementById('shell');
+if(shell) shell.classList.toggle('bw-privacy-blur', !!on);
+}
+function bwShowLock() {
+if(_lockIsShown || !_lockEligible()) return;
+_lockIsShown = true;
+bwApplyBlur(true);
+var ov = document.getElementById('lock-ov');
+if(!ov) return;
+document.getElementById('lock-email').textContent = _v2User.email || '';
+document.getElementById('lock-pass').value = '';
+document.getElementById('lock-err').textContent = '';
+ov.style.display = 'flex';
+enableScrollLock();
+setTimeout(function(){ var p=document.getElementById('lock-pass'); if(p) p.focus(); }, 150);
+}
+function bwHideLock() {
+_lockIsShown = false;
+bwApplyBlur(false);
+var ov = document.getElementById('lock-ov');
+if(ov) ov.style.display = 'none';
+disableScrollLock();
+_lockLastActive = Date.now();
+_lockHiddenAt = null;
+}
+async function unlockApp() {
+var pass = (document.getElementById('lock-pass')||{value:''}).value;
+var errEl = document.getElementById('lock-err');
+if(!pass) { if(errEl) errEl.textContent = 'Enter your password.'; return; }
+if(!_v2User || !_v2User.email) { bwHideLock(); return; }
+var client = sb || sbInit();
+if(!client) { if(errEl) errEl.textContent = 'Can\'t verify — check your connection and try again.'; return; }
+var btn = document.getElementById('lock-unlock-btn');
+if(btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+try {
+var result = await client.auth.signInWithPassword({ email: _v2User.email, password: pass });
+if(result.error) throw result.error;
+bwHideLock();
+} catch(e) {
+if(errEl) errEl.textContent = 'Incorrect password. Try again.';
+var p = document.getElementById('lock-pass');
+if(p) { p.value=''; p.focus(); }
+} finally {
+if(btn) { btn.disabled = false; btn.textContent = 'Unlock'; }
+}
+}
+function lockScreenSignOut() {
+_lockIsShown = false;
+bwApplyBlur(false);
+var ov = document.getElementById('lock-ov');
+if(ov) ov.style.display = 'none';
+disableScrollLock();
+authSignOut();
+}
+document.addEventListener('visibilitychange', function(){
+if(document.hidden) {
+// Snapshot happens synchronously on backgrounding — blur immediately,
+// regardless of idle time, so the OS never captures readable data.
+if(_lockEligible()) bwApplyBlur(true);
+_lockHiddenAt = Date.now();
+} else {
+var idleMs = Date.now() - _lockLastActive;
+var awayMs = _lockHiddenAt ? (Date.now() - _lockHiddenAt) : 0;
+if(_lockEligible() && (idleMs >= _lockTimeoutMs || awayMs >= _lockTimeoutMs)) {
+bwShowLock();
+} else if(!_lockIsShown) {
+bwApplyBlur(false);
+}
+_lockHiddenAt = null;
+}
+}, false);
+setInterval(function(){
+if(!document.hidden && _lockEligible() && !_lockIsShown && (Date.now() - _lockLastActive) >= _lockTimeoutMs) {
+bwShowLock();
+}
+}, 30000);
 async function v2CreateHousehold(name) {
 var sb = sbInit(); if(!sb || !_v2User) return null;
 try {
@@ -18025,6 +18413,7 @@ dbg('[V2] Household loaded: '+_v2Household.name);
 }
 async function v2InviteMember(email) {
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) { toast('Sign in first.'); return; }
+if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can invite members.'); return; }
 if(!email || !/\S+@\S+\.\S+/.test(email)) { toast('Enter a valid email.'); return; }
 try {
 var r = await sb.from('household_invites').insert({
@@ -18295,6 +18684,7 @@ toast('&#9888; Cloud sync error: ' + (e && e.message || 'unknown'));
 });
 }, { passive: true });
 }
+var _syncAuthErrorWarned = false;
 async function pushToCloud() {
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) return;
 var hhId = _v2Household.id;
@@ -18333,6 +18723,11 @@ if(r.error) throw r.error;
 pushed += chunk.length;
 } catch(e) {
 dbg('[SYNC] push chunk err: '+e.message);
+var _pushErrCls = (typeof classifyAuthError === 'function') ? classifyAuthError(e) : null;
+if(_pushErrCls && (_pushErrCls.type === 'session_expired' || _pushErrCls.type === 'invalid_credentials') && !_syncAuthErrorWarned) {
+_syncAuthErrorWarned = true;
+toast('⌛ Sync paused — your session expired. Please sign in again.');
+}
 chunk.forEach(function(row){ v2queueAdd(row.table_name, 'upsert', row); });
 }
 }
@@ -19316,6 +19711,7 @@ return _hhInvites;
 }
 async function renameHousehold(newName) {
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) return;
+if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can rename the household.'); return; }
 if(!newName || !newName.trim()) { toast('Enter a household name.'); return; }
 var name = newName.trim();
 try {
@@ -19337,6 +19733,7 @@ hhRenderSettings();
 }
 async function removeMember(memberId, rowEl) {
 if(!memberId) return;
+if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can remove members.'); return; }
 showCfm('Remove this member from your household?', 'Remove Member', async function(){
 var sb = sbInit(); if(!sb || !_v2Household || !_v2User) return;
 if(rowEl){ rowEl.classList.add('hh-removing'); await new Promise(function(r){setTimeout(r,250);}); }
@@ -19356,7 +19753,7 @@ hhRenderSettings();
 } catch(e) { toast('Remove failed: '+e.message); dbg('[HH] remove error: '+e.message); hhRenderSettings(); }
 });
 }
-async function changeHouseholdMemberRole(memberId, newRole) {
+async function changeHouseholdMemberRole(memberId, newRole, targetUserId) {
 if(!memberId || !newRole) return;
 if(newRole === 'owner') { toast('Transfer ownership is not supported from this UI.'); return; }
 if(AppState.currentUserRole !== 'owner') { toast('Only owners can change member roles.'); return; }
@@ -19371,7 +19768,7 @@ if(r.error) throw r.error;
 toast('&#10003; Role updated to ' + newRole + '.');
 dbg('[changeHouseholdMemberRole] ' + memberId + ' → ' + newRole);
 writeAudit('role_changed', memberId, { role: newRole, memberId: memberId });
-writeNotification('role_changed', 'Role updated', 'Your role was changed to ' + newRole + '.', memberId);
+if(targetUserId) writeNotification('role_changed', 'Role updated', 'Your role was changed to ' + newRole + '.', targetUserId);
 await loadHouseholdMembers();
 hhRenderSettings();
 } catch(e) {
@@ -19479,7 +19876,9 @@ if(btn) btn.disabled=false;
 }
 
 // ── hhInviteOpen / hhInviteClose with confirmation screen support ──────
+var _hhInviteTrigger = null;
 function hhInviteOpen() {
+_hhInviteTrigger = _captureFocusTrigger();
 enableScrollLock();
 var el = document.getElementById('hh-invite-modal');
 if(el) el.classList.add('open');
@@ -19508,15 +19907,20 @@ var titleEl   = document.getElementById('hh-invite-title');
 if(entryEl)   entryEl.style.display='block';
 if(confirmEl) confirmEl.style.display='none';
 if(titleEl)   titleEl.textContent='Invite Member';
+if (_hhInviteTrigger && typeof _hhInviteTrigger.focus === 'function' && document.contains(_hhInviteTrigger)) _hhInviteTrigger.focus();
+_hhInviteTrigger = null;
 }
 
 // ── Accept Invite Overlay ─────────────────────────────────────────────────
 var _hhPendingInviteId = null;
+var _hhAcceptTrigger = null;
 function hhAcceptOpen(inviteId, hhName) {
 _hhPendingInviteId = inviteId;
+_hhAcceptTrigger = _captureFocusTrigger();
 enableScrollLock();
 var el = document.getElementById('hh-accept-overlay');
 if(el) el.classList.add('open');
+setTimeout(function(){ var btn=document.getElementById('hh-accept-btn'); if(btn) btn.focus(); }, 50);
 var nameEl = document.getElementById('hh-accept-hh-name');
 if(nameEl) {
 if(hhName) { nameEl.textContent = hhName; nameEl.style.display='inline-block'; }
@@ -19536,6 +19940,8 @@ disableScrollLock();
 var el = document.getElementById('hh-accept-overlay');
 if(el) el.classList.remove('open');
 _hhPendingInviteId = null;
+if (_hhAcceptTrigger && typeof _hhAcceptTrigger.focus === 'function' && document.contains(_hhAcceptTrigger)) _hhAcceptTrigger.focus();
+_hhAcceptTrigger = null;
 }
 async function hhAcceptConfirm() {
 if(!_hhPendingInviteId) { toast('No invite token.'); return; }
@@ -19593,7 +19999,7 @@ overflowHtml =
 '<div class="hh-member-row-wrap" style="position:relative;display:inline-flex">'
 +'<button class="hh-more-btn" aria-label="More actions for '+esc(email)+'" aria-haspopup="true" aria-controls="'+menuId+'" onclick="hhToggleOverflow(\''+menuId+'\',event)">&#8942;</button>'
 +'<div id="'+menuId+'" class="hh-overflow-menu" role="menu">'
-+'<div class="hh-overflow-item" role="menuitem" onclick="hhChangeRoleInline(\''+m.id+'\',\''+role+'\',\''+menuId+'\')">'
++'<div class="hh-overflow-item" role="menuitem" onclick="hhChangeRoleInline(\''+m.id+'\',\''+role+'\',\''+menuId+'\',\''+(m.user_id||'')+'\')">'
 +'&#9997;&nbsp; Change Role'
 +'</div>'
 +'<div class="hh-overflow-item danger" role="menuitem" onclick="hhRemoveInline(\''+m.id+'\',\''+esc(email)+'\',\''+menuId+'\')">'
@@ -19630,12 +20036,12 @@ if(!e.target.closest('.hh-member-row-wrap')) {
 document.querySelectorAll('.hh-overflow-menu.open').forEach(function(el){ el.classList.remove('open'); });
 }
 });
-function hhChangeRoleInline(memberId, currentRole, menuId) {
+function hhChangeRoleInline(memberId, currentRole, menuId, targetUserId) {
 var menu = document.getElementById(menuId);
 if(menu) menu.classList.remove('open');
 var newRole = currentRole === 'member' ? 'viewer' : 'member';
 showCfm('Change role to "' + newRole + '"?', 'Change Role', function() {
-changeHouseholdMemberRole(memberId, newRole).then(function(){ rHousehold(); });
+changeHouseholdMemberRole(memberId, newRole, targetUserId).then(function(){ rHousehold(); });
 });
 }
 function hhRemoveInline(memberId, email, menuId) {
@@ -20367,7 +20773,7 @@ var roleCls = role === 'owner' ? 'owner' : (role === 'viewer' ? 'viewer' : 'memb
 var roleLabel = isMe ? role + ' (you)' : role;
 var roleControl = (isOwner && !isMe && role !== 'owner')
 ? '<select class="hh-role-select" aria-label="Change role for '+esc(email)+'"'
-+ ' onchange="changeHouseholdMemberRole(\''+m.id+'\',this.value)">'
++ ' onchange="changeHouseholdMemberRole(\''+m.id+'\',this.value,\''+(m.user_id||'')+'\')">'
 + '<option value="member"'+(role==='member'?' selected':'')+'>member</option>'
 + '<option value="viewer"'+(role==='viewer'?' selected':'')+'>viewer</option>'
 + '</select>'
@@ -20667,15 +21073,18 @@ renderAuditLog(document.getElementById('household-audit-log'));
 renderActivityFeedV2();
 fetchActivityFeed().then(function(){ renderActivityFeedV2(); });
 }
+var _hspTrigger = null;
 function hspOpen() {
 var panel    = document.getElementById('household-settings-panel');
 var backdrop = document.getElementById('hsp-backdrop');
 var toggle   = document.getElementById('hsp-toggle');
+_hspTrigger = _captureFocusTrigger();
 if(panel)    { panel.classList.add('open'); }
 if(backdrop) { backdrop.classList.add('open'); }
 if(toggle)   { toggle.classList.add('open'); }
 if(typeof enableScrollLock === 'function') enableScrollLock();
 renderHouseholdSettingsPanel();
+setTimeout(function(){ var closeBtn=panel&&panel.querySelector('.hsp-close'); if(closeBtn) closeBtn.focus(); }, 50);
 // Populate insights-tools section (rendered into page-Budget IDs)
 var _toolFns=[renderAIInsights,renderForecast,renderFinancialHealthScore,renderNetWorth,
   renderAdvisorThread,renderAIMemory,renderAnomalies,renderSubscriptions,renderTaxPrep,
@@ -20692,6 +21101,8 @@ if(panel)    { panel.classList.remove('open'); }
 if(backdrop) { backdrop.classList.remove('open'); }
 if(toggle)   { toggle.classList.remove('open'); }
 if(typeof disableScrollLock === 'function') disableScrollLock();
+if (_hspTrigger && typeof _hspTrigger.focus === 'function' && document.contains(_hspTrigger)) _hspTrigger.focus();
+_hspTrigger = null;
 }
 function writeAudit(action, targetId, meta) {
 var client = sb || sbInit();
@@ -21209,6 +21620,7 @@ url:     null,    // signed download URL when ready
 pollTimer: null   // setInterval handle for status polling
 };
 async function requestHouseholdExport(format) {
+if(_exportState.status === 'pending' || _exportState.status === 'processing') { toast('An export is already in progress.'); return { exportId: null, error: 'in_flight' }; }
 var client = sb || sbInit();
 if(!client || !_v2Household || !_v2User) return { exportId: null, error: 'not signed in' };
 var fmt = format || 'json';
@@ -21254,9 +21666,15 @@ var attempts = 0;
 _exportState.pollTimer = setInterval(function() {
 attempts++;
 checkExportStatus().then(function(status) {
-if(status === 'ready' || status === 'failed' || status === 'expired' || attempts >= 30) {
+if(status === 'ready' || status === 'failed' || status === 'expired') {
 clearInterval(_exportState.pollTimer);
 _exportState.pollTimer = null;
+} else if(attempts >= 30) {
+clearInterval(_exportState.pollTimer);
+_exportState.pollTimer = null;
+_exportState.status = 'failed';
+toast('&#9888; Export is taking longer than expected — please try again.');
+renderExportStatus();
 }
 });
 }, 4000);
@@ -21278,7 +21696,7 @@ _exportState.url    = row.download_url || null;
 if(row.status === 'ready' && _exportState._lastNotifiedReady !== _exportState.id) {
 _exportState._lastNotifiedReady = _exportState.id;
 writeNotification('export_ready', 'Export ready',
-'Your ' + _exportState.format.toUpperCase() + ' export is ready to download.', _v2User && _v2User.id);
+'Your ' + _exportState.format.toUpperCase() + ' export is ready to download.', null);
 writeAudit('export_ready', _exportState.id, { format: _exportState.format, rows: row.row_count });
 }
 renderExportStatus();
@@ -21512,6 +21930,7 @@ return 'You are a personal finance advisor for ' + hhName + ' (' + membersCount 
 + ']} — include 3 to 6 items.';
 }
 async function requestAIInsights(monthKey) {
+if(_aiInsightState.status === 'processing') { toast('Insights are already being generated…'); return { insightId: null, error: 'in_flight' }; }
 var client = sb || sbInit();
 if(!client || !_v2Household || !_v2User) { toast('Not signed in — please log in first'); return { insightId: null, error: 'not signed in' }; }
 if(typeof enforceLimitsOrThrow === 'function') {
@@ -21665,7 +22084,7 @@ async function requestHouseholdBackup(label) {
 if(_backupInFlight) { toast('A backup is already in progress.'); return { backupId: null, error: 'in_flight' }; }
 if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can create backups.'); return { backupId: null, error: 'not_owner' }; }
 var client = sb || sbInit();
-if(!client || !_v2Household || !_v2User) return { backupId: null, error: 'not signed in' };
+if(!client || !_v2Household || !_v2User) { toast('⌛ You’re signed out — please sign in again to back up.'); return { backupId: null, error: 'not signed in' }; }
 _backupInFlight = true;
 renderBackupList();
 if(typeof enforceLimitsOrThrow === 'function') {
@@ -21718,7 +22137,16 @@ var attempts = 0;
 var timer = setInterval(function() {
 attempts++;
 var client = sb || sbInit();
-if(!client || attempts > 30) { clearInterval(timer); return; }
+if(!client || attempts > 30) {
+clearInterval(timer);
+var idx = _backupListCache.findIndex(function(b){ return b.id === backupId; });
+if(idx >= 0 && _backupListCache[idx].status !== 'ready' && _backupListCache[idx].status !== 'failed' && _backupListCache[idx].status !== 'expired') {
+_backupListCache[idx].status = 'failed';
+toast('&#9888; Backup status check timed out — please try again.');
+renderBackupList();
+}
+return;
+}
 client.from('household_backups')
 .select('status, download_url, tx_count, file_size_bytes')
 .eq('id', backupId)
@@ -21732,7 +22160,7 @@ if(idx >= 0) Object.assign(_backupListCache[idx], row);
 if(status === 'ready') {
 clearInterval(timer);
 writeNotification('backup_ready', 'Backup ready',
-'Your household backup is complete and ready to download.', _v2User && _v2User.id);
+'Your household backup is complete and ready to download.', null);
 writeAudit('backup_ready', backupId, { tx_count: row.tx_count });
 writeAudit('backup_created', backupId, { tx_count: row.tx_count });
 triggerWebhookEvent('backup_created', { backupId: backupId, tx_count: row.tx_count });
@@ -21940,6 +22368,7 @@ writeNotification('join_via_link', 'New member joined',
 'A new member joined your household via a sharing link.', null);
 writeAudit('join_via_link', null, { householdId: hid });
 writeAudit('member_joined', null, { householdId: hid, method: 'sharing_link' });
+triggerWebhookEvent('member_joined', { householdId: hid, method: 'sharing_link' });
 logCloudActivity('merge', 'Joined via sharing link', { householdId: hid });
 sendPushEventAdvanced('member_joined', 'New member joined', 'Someone joined your household via a sharing link.', null, null, { actions: [{ id:'view', label:'View members' }] });
 dbg('[acceptJoinLink] joined: ' + hid);
@@ -22625,8 +23054,10 @@ dbg('[saveAutopilotSettings] error: ' + e.message);
 //    enable/mode toggle in renderAutopilotSettings above) ──────────────────
 var _settingsPanelDraft = null; // working copy of settings while panel is open
 
+var _settingsPanelTrigger = null;
 async function openSettingsPanel() {
 if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can manage settings.'); return; }
+_settingsPanelTrigger = _captureFocusTrigger();
 enableScrollLock();
 await loadSettingsForPanel();
 _settingsPanelDraft = Object.assign({
@@ -22638,11 +23069,14 @@ cash_buffer_target:1000, bill_priority_order:'due_date', bill_autopay:false
 }, _autopilotSettings || {});
 renderSettingsPanel();
 document.getElementById('ap-settings-panel-overlay').classList.add('open');
+setTimeout(function(){ var closeBtn=document.querySelector('.ap-sp-close'); if(closeBtn) closeBtn.focus(); }, 50);
 }
 function closeSettingsPanel() {
 disableScrollLock();
 document.getElementById('ap-settings-panel-overlay').classList.remove('open');
 _settingsPanelDraft = null;
+if (_settingsPanelTrigger && typeof _settingsPanelTrigger.focus === 'function' && document.contains(_settingsPanelTrigger)) _settingsPanelTrigger.focus();
+_settingsPanelTrigger = null;
 }
 function apSpOverlayClick(evt) {
 if(evt.target && evt.target.id === 'ap-settings-panel-overlay') closeSettingsPanel();
@@ -22972,7 +23406,7 @@ if(r.error) throw r.error;
 var idx = _autopilotActions.findIndex(function(a){ return a.id === actionId; });
 if(idx >= 0) _autopilotActions[idx].status = 'applied';
 writeAudit(auditAction, actionId, { type: action.type, title: action.title });
-toast('&#10003; Applied: ' + action.title);
+toast('&#10003; Applied: ' + esc(action.title));
 if(typeof renderAll === 'function') renderAll();
 renderAutopilotSettings();
 dbg('[applyAutopilotAction] applied: ' + actionId);
@@ -23117,8 +23551,8 @@ return { ok: false, error: 'permission_' + perm };
 }
 var swReg = null;
 try {
-swReg = await navigator.serviceWorker.getRegistration('/');
-if(!swReg) swReg = await navigator.serviceWorker.register('/sw.js');
+swReg = await navigator.serviceWorker.getRegistration();
+if(!swReg) swReg = await navigator.serviceWorker.register('sw.js');
 await navigator.serviceWorker.ready;
 } catch(swErr) {
 dbg('[registerPushToken] no SW: ' + swErr.message);
@@ -24745,7 +25179,7 @@ status:         'upcoming'
 }).select('id, event_type, event_date, metadata, created_at').single();
 if(r.error) throw r.error;
 _lifeEventsCache.push(r.data);
-_lifeEventsCache.sort(function(a,b){
+_lifeEventsCache = _lifeEventsCache.slice().sort(function(a,b){
 return (a.event_date || '9999') > (b.event_date || '9999') ? 1 : -1;
 });
 toast((LE_TYPE_META[eventType] ? LE_TYPE_META[eventType].icon + ' ' : '') + 'Life event added.');
@@ -27769,6 +28203,7 @@ return [];
 }
 }
 async function generateMilestonesForGoal(goalId) {
+if(_milestoneGenRunning) { toast('Milestones are already being generated…'); return; }
 var client = sb || sbInit();
 if(!client || !_v2Household || !_v2Session) return;
 var goal = AppState.goals && AppState.goals.find(function(g){ return g.id === goalId; });
@@ -27802,7 +28237,7 @@ var data = await resp.json();
 if(data && data.error) throw new Error(data.error);
 await fetchMilestones(goalId);
 writeAudit('milestones_batch_generated', goalId, { goal_name: goal.name, count: (data && data.count) || 0 });
-toast('&#127919; Milestones generated for ' + goal.name + '!');
+toast('&#127919; Milestones generated for ' + esc(goal.name) + '!');
 renderMilestones();
 dbg('[generateMilestonesForGoal] done for goal: ' + goalId);
 } catch(e) {
@@ -27908,7 +28343,7 @@ el.innerHTML = '<div class="ms-no-goals">No goals set yet. Add a goal from the G
 return;
 }
 var html = goals.map(function(goal) {
-var milestones = (_milestonesCache[goal.id] || []).sort(function(a,b){ return a.sequence - b.sequence; });
+var milestones = (_milestonesCache[goal.id] || []).slice().sort(function(a,b){ return a.sequence - b.sequence; });
 var pct = goal.target > 0 ? Math.min(1, (goal.saved || 0) / goal.target) : 0;
 var pctStr = Math.round(pct * 100) + '%';
 var msRows = '';
@@ -29695,6 +30130,7 @@ authState.session = session;
 _v2User    = session.user;
 _v2Session = session;
 authPersist('user', session.user.email, null);
+_syncAuthErrorWarned = false;
 } else if(event === 'SIGNED_OUT') {
 authState.status  = 'guest';
 authState.user    = null;
@@ -29702,10 +30138,17 @@ authState.session = null;
 _v2User    = null;
 _v2Session = null;
 authPersist('guest', null, null);
+if(!_localSignOutInFlight) {
+// Signed out in a different tab — reflect it here too instead of silently going stale
+try { renderUserPill(); } catch(e){}
+toast('⌛ You were signed out.');
+setTimeout(function(){ authShowOverlay(); }, 400);
+}
 } else if(event === 'TOKEN_REFRESHED' && session) {
 authState.session    = session;
 authState.lastAuthCheck = new Date().toISOString();
 _v2Session = session;
+_syncAuthErrorWarned = false;
 dbg('[AUTH] Token refreshed successfully');
 } else if(event === 'USER_UPDATED' && session) {
 authState.user    = session.user;
@@ -30488,10 +30931,21 @@ return true;
 };
 var _pushToCloudOrig = pushToCloud;
 pushToCloud = async function() {
+// Validate-for-push must not permanently drop items from local state —
+// only the upload payload should be filtered. Swap in the validated
+// arrays for the duration of the push, then restore the real local
+// arrays afterward regardless of outcome.
+var origTx = AppState.transactions, origGoals = AppState.goals, origRules = AppState.recurRules;
+try {
 if(AppState.transactions) AppState.transactions = validator.validateForPush('transactions', AppState.transactions);
 if(AppState.goals)        AppState.goals        = validator.validateForPush('goals', AppState.goals);
 if(AppState.recurRules)   AppState.recurRules   = validator.validateForPush('recurring_rules', AppState.recurRules);
-return _pushToCloudOrig.apply(this, arguments);
+return await _pushToCloudOrig.apply(this, arguments);
+} finally {
+AppState.transactions = origTx;
+AppState.goals = origGoals;
+AppState.recurRules = origRules;
+}
 };
 var _mergeFromCloudV = mergeFromCloud;
 mergeFromCloud = function(rows) {
@@ -31589,7 +32043,7 @@ return goals.filter(function(g){return g&&!g._deleted;}).map(function(g){
 var target = parseFloat(g.target||g.targetAmount||g.goal)||0;
 var saved  = parseFloat(g.saved||g.current||g.currentAmount||0);
 var pct    = target>0 ? Math.min(saved/target, 1.0) : 0;
-var deadline = g.targetDate ? new Date(g.targetDate) : null;
+var deadline = g.targetDate ? new Date(g.targetDate+'T00:00:00') : null;
 var daysLeft = deadline ? Math.max(Math.round((deadline-today)/86400000),0) : null;
 var dailyNeeded = (daysLeft&&daysLeft>0) ? (target-saved)/daysLeft : null;
 var projDays = dailyNeeded && dailyNeeded>0 ? Math.round((target-saved)/dailyNeeded) : null;
@@ -32506,7 +32960,15 @@ return result;
 var FORECAST_KEY = 'kevt_v3_forecast';
 var forecastEngine = {
 _hist: function(days) {
-var txs=(AppState.transactions||[]).filter(function(t){return t&&!t._deleted&&t.type!=='income'&&t.type!=='payment';});
+// Recurring-bill spend is forecasted separately and explicitly via
+// forecastRecurringBills() — if it stayed in this historical baseline too,
+// every forecast that adds bills on top of the blended average would
+// double-count them (the average already has past bill payments baked in).
+var rules=(AppState.recurRules||[]).filter(function(r){return r&&r.active&&!r._deleted;});
+var txs=(AppState.transactions||[]).filter(function(t){
+if(!t||t._deleted||t.type==='income'||t.type==='payment') return false;
+return !rules.some(function(r){return txMatchesRule(t,r);});
+});
 return cashflowEngine._dailySpends(txs, days);
 },
 _blendedDaily: function() {
@@ -34065,7 +34527,7 @@ var adjustments=[];
 var goals=(AppState.goals||[]).filter(function(g){return g&&!g._deleted&&g.targetDate;});
 goals.forEach(function(g){
 if(!g.targetDate) return;
-var current=new Date(g.targetDate);
+var current=new Date(g.targetDate+'T00:00:00');
 var today=new Date();
 var daysLeft=Math.max(Math.round((current-today)/86400000),0);
 if(!daysLeft) return;
@@ -34560,12 +35022,16 @@ if(m6&&m6.projectedSavings>0){
 assets.push({ id:'__auto_savings6__', type:'savings', name:'Projected 6-Mo Savings',
 value: Math.round(m6.projectedSavings), auto:true, updated_at:new Date().toISOString() });
 }
-}
+// Only estimate goal savings as their own asset when the user hasn't
+// manually tracked a cash asset — otherwise that money is almost always
+// already sitting inside the cash balance they entered, and adding it
+// again here would double-count it against net worth.
 (AppState.goals||[]).filter(function(g){return g&&!g._deleted&&(parseFloat(g.saved||g.current||0))>0;}).forEach(function(g){
 var saved=parseFloat(g.saved||g.current||0);
 if(saved>0) assets.push({id:'__goal_'+g.id, type:'savings', name:(g.name||'Goal')+' Fund',
 value:saved, auto:true, updated_at:new Date().toISOString()});
 });
+}
 return assets;
 },
 loadLiabilities: function() {
@@ -35551,7 +36017,7 @@ return goals.map(function(g){
 var target  = parseFloat(g.target||g.targetAmount||g.goal)||0;
 var saved   = parseFloat(g.saved||g.current||g.currentAmount||0);
 var remaining= Math.max(target-saved,0);
-var deadline = g.targetDate?new Date(g.targetDate):null;
+var deadline = g.targetDate?new Date(g.targetDate+'T00:00:00'):null;
 var daysLeft = deadline?Math.max(Math.round((deadline-now)/86400000),0):null;
 var monthsLeft= daysLeft!==null?Math.max(daysLeft/30,0.5):null;
 return { id:g.id, name:g.name||'Goal', target:target, saved:saved,
@@ -45168,10 +45634,13 @@ return result;
 };
 }
 function toggleTheme(){
-var body=document.body;
-var isDim=body.getAttribute('data-theme')==='dim';
-body.setAttribute('data-theme',isDim?'':'dim');
-try{localStorage.setItem(THEME_KEY,isDim?'':'dim');}catch(e){}
+// Delegate to setTheme() so this uses the same body.classList('dim')
+// mechanism the full dark-mode CSS system keys off, instead of the
+// separate data-theme attribute this used to set (which only matched an
+// 11-property fallback block and left the ~118-rule component overrides
+// unapplied — most of the UI stayed in light-mode colors).
+var isDim = document.body.classList.contains('dim');
+setTheme(isDim ? 'light' : 'dim');
 }
 function loadTheme(){
 try{
@@ -45282,19 +45751,10 @@ if(el) el.textContent=
 +'UA: '+navigator.userAgent.slice(0,80)+'\n'
 +'currentMonth: '+mk(cY,cM)+'\n'
 +'S===AppState: '+(S===AppState);
-var last3=AppState.transactions.slice(0,3);
 el=document.getElementById('dbg-txs');
-if(el) el.textContent=last3.length
-?last3.map(function(t){return t.date+' '+t.type+' '+fmt(t.amount)+' '+( t.merchantNorm||t.merchant||'');}).join('\n')
-:'(none)';
-try{
-var raw=localStorage.getItem(SK)||'(empty)';
+if(el) el.textContent='(redacted — financial data hidden in debug view)';
 el=document.getElementById('dbg-ls');
-if(el) el.textContent=raw.slice(0,500)+(raw.length>500?'…':'');
-}catch(e){
-el=document.getElementById('dbg-ls');
-if(el) el.textContent='Error: '+e.message;
-}
+if(el) el.textContent='(redacted — raw storage contains unencrypted financial data)';
 try { dbgRefreshV3(); } catch(e) { dbg('[DBG] dbgRefreshV3 error: '+e.message); }
 }
 function dbgRefreshV3(){
@@ -46531,6 +46991,13 @@ dbg('[Keyboard] scrollIntoView error: '+err.message);
 }, true);
 loadTheme();
 loadPrefs(); // Load personalization prefs on boot
+if('serviceWorker' in navigator) {
+window.addEventListener('load', function(){
+navigator.serviceWorker.register('sw.js').then(function(reg){
+dbg('[SW] registered, scope: '+reg.scope);
+}).catch(function(e){ dbg('[SW] registration failed: '+e.message); });
+});
+}
 setTimeout(function(){ try { maintainNextDueDates(); } catch(e) { dbg('[DBG] maintainNextDueDates err: '+e.message); } }, 1200); // Maintain nextDue dates after load
 setTimeout(function(){ try { deferredBoot(); } catch(e) { dbg('[DBG] deferredBoot err: '+e.message); } }, 800); // Deferred: search index + pattern detection
 try { if(typeof detectInviteToken === 'function') detectInviteToken(); } catch(e){}
@@ -46657,6 +47124,7 @@ __obLog('[7] resumeOAuthIfNeeded() returned');
 } else {
 __obLog('[6-ALT] resumeOAuthIfNeeded is NOT a function: ' + typeof (PlaidLinkManager && PlaidLinkManager.resumeOAuthIfNeeded));
 }
+try { if(typeof PlaidLinkManager.checkPendingHostedLink === 'function') PlaidLinkManager.checkPendingHostedLink(); } catch(e) { dbg('[Plaid] checkPendingHostedLink boot error: '+e.message); }
 autoSyncOnLoad();
 __obLog('[8] autoSyncOnLoad() done');
 checkShowTutorial();
@@ -46683,53 +47151,6 @@ setTimeout(function(){ openModal(null); }, 500);
 } catch(e){}
 }); // end runSplash callback
 }); // end DOMContentLoaded
-(function initPTR(){
-var content   = document.getElementById('content');
-var indicator = document.getElementById('ptr-indicator');
-if(!content || !indicator) return;
-var startY=0, pulling=false, triggered=false;
-var THRESHOLD=72, MAX_PULL=90;
-content.addEventListener('touchstart', function(e){
-if(content.scrollTop > 2){ pulling=false; return; }
-startY=e.touches[0].clientY; pulling=true; triggered=false;
-}, {passive:true});
-content.addEventListener('touchmove', function(e){
-if(!pulling) return;
-var dy=e.touches[0].clientY - startY;
-if(dy<=0){ pulling=false; hidePtr(); return; }
-var travel=Math.min(dy*0.45, MAX_PULL);
-var pct=Math.min(travel/THRESHOLD, 1);
-indicator.classList.add('visible');
-indicator.classList.remove('spinning');
-indicator.style.transform='translateX(-50%) translateY('+(Math.round(travel-20))+'px) rotate('+(Math.round(pct*200))+'deg)';
-indicator.style.opacity=String(Math.min(pct*1.4, 1));
-if(travel>=THRESHOLD && !triggered){
-triggered=true;
-if(navigator.vibrate) navigator.vibrate(10);
-}
-}, {passive:true});
-content.addEventListener('touchend', function(){
-if(!pulling) return;
-pulling=false;
-if(triggered){
-indicator.style.transform='translateX(-50%) translateY(12px)';
-indicator.classList.remove('visible');
-indicator.classList.add('spinning');
-setTimeout(function(){
-try{ if(typeof autoGenerateRecurring==='function') autoGenerateRecurring(); renderAll(); }catch(e){}
-hidePtr();
-toast('Refreshed');
-}, 650);
-} else {
-hidePtr();
-}
-}, {passive:true});
-function hidePtr(){
-indicator.classList.remove('visible','spinning');
-indicator.style.transform='translateX(-50%) translateY(-60px)';
-indicator.style.opacity='0';
-}
-}());
 /* ---- originally inline <script>, source index.html lines 58371-58383 ---- */
 (function(){
 function checkSplash(){
@@ -49043,6 +49464,7 @@ win.assembleAutopilotEngineInputFromUI = function() {
     return {
       id:        safeStr(t.id || t.sig),
       amount:    safeNum(t.amount),
+      type:      safeStr(t.type || 'expense'),
       date:      safeStr(t.date || t.occurredAt || today),
       category:  safeStr(t.category || t.canonicalCategory || 'uncategorized'),
       merchant:  safeStr(t.merchant_name || t.merchant || t.name || 'unknown'),
@@ -49322,23 +49744,33 @@ function csEsc(s)   { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
 function csValCls(n){ return n > 0 ? 'cs-pos' : n < 0 ? 'cs-neg' : 'cs-neu'; }
 
 // ── Open / Close ──────────────────────────────────────────────────────────
+var _csTrigger = null;
 function openCashflowSimulator() {
   var overlay = csEl('cashflow-sim-modal-overlay');
   if (!overlay) return;
+  _csTrigger = _captureFocusTrigger();
   overlay.style.display = 'flex';
-  document.body.style.overflow = 'hidden';
+  enableScrollLock();
   window.cashflowSimulationMode = true;
   var bar = csEl('d24-sim-mode-bar');
   if (bar) bar.style.display = 'block';
+  document.addEventListener('keydown', _csEscHandler);
   renderCashflowSimulator();
+  setTimeout(function(){ var closeBtn=csEl('cs-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 }
 function closeCashflowSimulator() {
   var overlay = csEl('cashflow-sim-modal-overlay');
+  if (overlay && overlay.style.display !== 'none') disableScrollLock();
   if (overlay) overlay.style.display = 'none';
-  document.body.style.overflow = '';
   window.cashflowSimulationMode = false;
   var bar = csEl('d24-sim-mode-bar');
   if (bar) bar.style.display = 'none';
+  document.removeEventListener('keydown', _csEscHandler);
+  if (_csTrigger && typeof _csTrigger.focus === 'function' && document.contains(_csTrigger)) _csTrigger.focus();
+  _csTrigger = null;
+}
+function _csEscHandler(e) {
+  if (e.key === 'Escape') closeCashflowSimulator();
 }
 function csOverlayClick(evt) {
   if (evt.target && evt.target.id === 'cashflow-sim-modal-overlay') closeCashflowSimulator();
@@ -49346,18 +49778,23 @@ function csOverlayClick(evt) {
 
 // ── Simulation Details Modal ──────────────────────────────────────────────
 var _csCurrentItem = null;
+var _simDetailsTrigger = null;
 function openSimulationDetailsModal(item) {
   if (!item) return;
   _csCurrentItem = item;
   var modal = csEl('sim-details-modal');
   if (!modal) return;
+  _simDetailsTrigger = _captureFocusTrigger();
   renderSimulationDetails(item);
   modal.style.display = 'flex';
+  setTimeout(function(){ var closeBtn=csEl('sim-details-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 }
 function closeSimulationDetailsModal() {
   var modal = csEl('sim-details-modal');
   if (modal) modal.style.display = 'none';
   _csCurrentItem = null;
+  if (_simDetailsTrigger && typeof _simDetailsTrigger.focus === 'function' && document.contains(_simDetailsTrigger)) _simDetailsTrigger.focus();
+  _simDetailsTrigger = null;
 }
 function simDetailsOverlayClick(evt) {
   if (evt.target && evt.target.id === 'sim-details-modal') closeSimulationDetailsModal();
@@ -50202,6 +50639,7 @@ function convertParsedRowsToRawPlaidItems(rows) {
   });
 
   var txSeen = {};
+  var dupOccurrence = {};
   var transactions = rows.map(function(r, idx) {
     var colDate     = colMap['date']     ? (r[colMap['date']]    || '') : '';
     var colAmount   = colMap['amount']   ? (r[colMap['amount']]  || '') : '';
@@ -50212,10 +50650,23 @@ function convertParsedRowsToRawPlaidItems(rows) {
 
     var date    = normalizeDate(colDate) || today;
     var amount  = normalizeAmount(colAmount);
+    // normalizeAmount() falls back to 0 for unparseable text (e.g. "N/A",
+    // "pending") the same way it does for a genuinely blank/zero amount —
+    // distinguish the two here so garbage doesn't silently become a real
+    // $0 transaction with no indication anything was skipped.
+    var amtRawTrim = String(colAmount||'').trim();
+    if (amtRawTrim && !/^[-+]?[$]?[\d,]*\.?\d+\)?$|^\([\d,]*\.?\d+\)$/.test(amtRawTrim.replace(/\s/g,''))) return null;
     var merchant= colMerchant.trim() || 'Import Row ' + (idx+1);
     var acctName= colAcct.trim();
     var acctId  = acctName ? ('import-' + acctName.toLowerCase().replace(/[^a-z0-9]+/g,'-')) : 'import-default';
-    var txId    = colId.trim() || ('import-' + date + '-' + Math.abs(amount) + '-' + idx);
+    // Key on content (date+amount+merchant), not row position — a positional
+    // idx would give the same logical transaction a different id every time
+    // it appears in a different file (e.g. re-importing an overlapping date
+    // range), defeating dedup entirely. An occurrence count still lets two
+    // genuinely-identical transactions on the same day coexist.
+    var dupKey  = date + '-' + Math.abs(amount) + '-' + merchant.toLowerCase();
+    var dupN    = dupOccurrence[dupKey] = (dupOccurrence[dupKey] || 0) + 1;
+    var txId    = colId.trim() || ('import-' + date + '-' + Math.abs(amount) + '-' + merchant.toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-' + dupN);
 
     // Skip duplicate IDs
     if (txSeen[txId]) return null;
@@ -50269,11 +50720,15 @@ function convertParsedRowsToRawPlaidItems(rows) {
 win.convertParsedRowsToRawPlaidItems = convertParsedRowsToRawPlaidItems;
 win.parseCSVFile  = parseCSVFile;
 win.parseXLSXFile = parseXLSXFile;
+win.parseCSVText  = parseCSVText;
+win.normalizeAmount = normalizeAmount;
 
 // ── Open dialog ───────────────────────────────────────────────
+var _importModalTrigger = null;
 win.openTransactionImportDialog = function() {
   var overlay = document.getElementById('import-modal-overlay');
   if (!overlay) return;
+  _importModalTrigger = _captureFocusTrigger();
   // Reset state
   var els = ['import-file-info','import-row-info','import-col-section','import-summary'];
   els.forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; });
@@ -50286,11 +50741,14 @@ win.openTransactionImportDialog = function() {
   // Wire file input inside modal open
   var fileInput = document.getElementById('transaction-file-input');
   if (fileInput) fileInput.value = '';
+  setTimeout(function(){ var closeBtn=document.querySelector('.import-modal-close'); if(closeBtn) closeBtn.focus(); }, 50);
 };
 
 win.closeImportModal = function() {
   var overlay = document.getElementById('import-modal-overlay');
   if (overlay) overlay.classList.remove('visible');
+  if (_importModalTrigger && typeof _importModalTrigger.focus === 'function' && document.contains(_importModalTrigger)) _importModalTrigger.focus();
+  _importModalTrigger = null;
 };
 
 // ── File selection handler ────────────────────────────────────
@@ -50584,9 +51042,11 @@ function setLinkStatus(msg, cls) {
 }
 
 // ── openAccountLinkDialog ─────────────────────────────────
+var _linkModalTrigger = null;
 win.openAccountLinkDialog = function() {
   var overlay = linkEl('link-modal-overlay');
   if (!overlay) return;
+  _linkModalTrigger = _captureFocusTrigger();
   // Reset to institution selection state
   linkShow('link-select-state');
   linkHide('link-loading');
@@ -50601,11 +51061,14 @@ win.openAccountLinkDialog = function() {
   win._linkSelectedInstId = null;
   win.renderInstitutionList();
   overlay.classList.add('visible');
+  setTimeout(function(){ var closeBtn=document.querySelector('.link-modal-close'); if(closeBtn) closeBtn.focus(); }, 50);
 };
 
 win.closeLinkModal = function() {
   var overlay = linkEl('link-modal-overlay');
   if (overlay) overlay.classList.remove('visible');
+  if (_linkModalTrigger && typeof _linkModalTrigger.focus === 'function' && document.contains(_linkModalTrigger)) _linkModalTrigger.focus();
+  _linkModalTrigger = null;
 };
 
 // ── renderInstitutionList ─────────────────────────────────
@@ -51095,6 +51558,7 @@ win.openActionDetailsModal = function(btnOrAction) {
   win._admCurrentAction = action;
   var overlay = actEl('action-details-modal-overlay');
   if (!overlay) return;
+  win._admTrigger = _captureFocusTrigger();
   var isBlocked   = !!(action._blocked);
   var explainMap  = win._lastExplainMap || {};
   var exp         = explainMap[action.id] || {};
@@ -51150,12 +51614,15 @@ win.openActionDetailsModal = function(btnOrAction) {
     }
   }
   overlay.classList.add('visible');
+  setTimeout(function(){ var closeBtn=actEl('action-details-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 };
 
 win.closeActionDetailsModal = function() {
   var overlay = actEl('action-details-modal-overlay');
   if (overlay) overlay.classList.remove('visible');
   win._admCurrentAction = null;
+  if (win._admTrigger && typeof win._admTrigger.focus === 'function' && document.contains(win._admTrigger)) win._admTrigger.focus();
+  win._admTrigger = null;
 };
 
 win.applyAutopilotAction = function(action) {
@@ -51448,6 +51915,7 @@ win.openInsightDetailsModal = function(btnOrInsight) {
   }
   if (!insight) return;
   win._d16CurrentInsight = insight;
+  win._d16Trigger = _captureFocusTrigger();
 
   var titleEl = d16El('d16-modal-title-text');
   var bodyEl  = d16El('d16-modal-body');
@@ -51456,6 +51924,7 @@ win.openInsightDetailsModal = function(btnOrInsight) {
 
   var overlay = d16El('d16-modal-overlay');
   if (overlay) overlay.classList.add('visible');
+  setTimeout(function(){ var closeBtn=d16El('d16-insight-details-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 };
 
 // ── closeInsightDetailsModal ──────────────────────────────────────────────
@@ -51463,6 +51932,8 @@ win.closeInsightDetailsModal = function() {
   var overlay = d16El('d16-modal-overlay');
   if (overlay) overlay.classList.remove('visible');
   win._d16CurrentInsight = null;
+  if (win._d16Trigger && typeof win._d16Trigger.focus === 'function' && document.contains(win._d16Trigger)) win._d16Trigger.focus();
+  win._d16Trigger = null;
 };
 
 // ── renderInsights (main entry from updateUIWithAutopilotOutput) ──────────
@@ -51870,7 +52341,10 @@ function d17ApplyScenario(input, scenario) {
   var txs = (ls.transactions = ls.transactions || []);
   txs.forEach(function(t) {
     if (!t) return;
-    var isIncome = t.amount < 0; // negative = credit in our model
+    // Real transactions (from assembleAutopilotEngineInputFromUI) carry an
+    // explicit type and are always non-negative; only synthetic hypothetical
+    // transactions added below (which have no type) use the signed convention.
+    var isIncome = t.type ? t.type === 'income' : t.amount < 0;
     if (isIncome && scenario.incomeAdjust !== 0) {
       t.amount = t.amount * (1 + scenario.incomeAdjust / 100);
     } else if (!isIncome && scenario.expenseAdjust !== 0) {
@@ -51912,10 +52386,11 @@ function d17ApplyScenario(input, scenario) {
 // ── d17MockEngineOutput: fallback mock if engine unavailable ──────────────
 function d17MockEngineOutput(input, scenario) {
   var txs = ((input.localState || {}).transactions || []);
-  var totalIncome  = txs.filter(function(t){ return t && t.amount < 0; })
+  var _isIncomeTx = function(t){ return t.type ? t.type === 'income' : t.amount < 0; };
+  var totalIncome  = txs.filter(function(t){ return t && _isIncomeTx(t); })
                        .reduce(function(s, t){ return s + Math.abs(t.amount); }, 0);
-  var totalExpense = txs.filter(function(t){ return t && t.amount > 0; })
-                       .reduce(function(s, t){ return s + t.amount; }, 0);
+  var totalExpense = txs.filter(function(t){ return t && !_isIncomeTx(t); })
+                       .reduce(function(s, t){ return s + Math.abs(t.amount); }, 0);
   var netCashflow  = totalIncome - totalExpense;
   var accounts     = ((input.localState || {}).accounts || []);
   var totalBal     = accounts.reduce(function(s, a){ return s + (a ? (a.balance || 0) : 0); }, 0);
@@ -51923,9 +52398,9 @@ function d17MockEngineOutput(input, scenario) {
 
   // Category impact: group expenses by category
   var catMap = {};
-  txs.filter(function(t){ return t && t.amount > 0; }).forEach(function(t) {
+  txs.filter(function(t){ return t && !_isIncomeTx(t); }).forEach(function(t) {
     var c = t.category || 'other';
-    catMap[c] = (catMap[c] || 0) + t.amount;
+    catMap[c] = (catMap[c] || 0) + Math.abs(t.amount);
   });
   var categoryInsights = Object.keys(catMap).sort(function(a,b){ return catMap[b]-catMap[a]; }).slice(0,5).map(function(c) {
     return { category: c, amount: catMap[c], severity: catMap[c] > 500 ? 'warning' : 'info' };
@@ -52318,6 +52793,7 @@ win.openAuditEventDetailsModal = function(elOrEvent) {
   }
   if (!event) return;
   win._d18CurrentEvent = event;
+  win._d18Trigger = _captureFocusTrigger();
 
   var titleEl = aEl('d18-modal-title-text');
   var bodyEl  = aEl('audit-details-content');
@@ -52327,6 +52803,7 @@ win.openAuditEventDetailsModal = function(elOrEvent) {
 
   var overlay = aEl('d18-modal-overlay');
   if (overlay) overlay.classList.add('visible');
+  setTimeout(function(){ var closeBtn=aEl('audit-details-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
 };
 
 // ── closeAuditEventDetailsModal ───────────────────────────────────────────
@@ -52334,6 +52811,8 @@ win.closeAuditEventDetailsModal = function() {
   var overlay = aEl('d18-modal-overlay');
   if (overlay) overlay.classList.remove('visible');
   win._d18CurrentEvent = null;
+  if (win._d18Trigger && typeof win._d18Trigger.focus === 'function' && document.contains(win._d18Trigger)) win._d18Trigger.focus();
+  win._d18Trigger = null;
 };
 
 // ── renderAuditEventDetails ───────────────────────────────────────────────
@@ -52675,11 +53154,13 @@ var _compassRenderMap = {
   'cmodal-vault':     ['renderVault','renderTaxPrep']
 };
 
+var _compassTrigger = null;
 window._compassOpen = function(id) {
   _compassClose(_compassActiveModal);
   var sheet = document.getElementById(id);
   var bd    = document.getElementById(id + '-bd');
   if (!sheet || !bd) return;
+  _compassTrigger = _captureFocusTrigger();
   _compassActiveModal = id;
   bd.classList.add('open');
   sheet.classList.add('open');
@@ -52689,6 +53170,10 @@ window._compassOpen = function(id) {
   var body = sheet ? sheet.querySelector('.cmodal-body') : null;
   if (body) body.scrollTop = 0;
   // NOTE: No body position:fixed — that causes iOS PWA touch coordinate offsets
+  setTimeout(function() {
+    var closeBtn = sheet.querySelector('.cmodal-close');
+    if (closeBtn) closeBtn.focus();
+  }, 50);
   var fns = _compassRenderMap[id] || [];
   if (fns.length) {
     setTimeout(function() {
@@ -52709,6 +53194,8 @@ window._compassClose = function(id) {
   if (_compassActiveModal === id) {
     _compassActiveModal = null;
     document.body.classList.remove('cmodal-open');
+    if (_compassTrigger && typeof _compassTrigger.focus === 'function' && document.contains(_compassTrigger)) _compassTrigger.focus();
+    _compassTrigger = null;
   }
 };
 
