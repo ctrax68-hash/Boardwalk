@@ -77,7 +77,7 @@ document.write(
   </div>
 </div>
 
-<div id="hh-invite-modal" onclick="if(event.target===this)hhInviteClose()">
+<div id="hh-invite-modal" role="dialog" aria-modal="true" aria-label="Invite household member" onclick="if(event.target===this)hhInviteClose()">
   <div id="hh-invite-panel">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--md)">
       <div style="font-size:var(--fs-cat-title);font-weight:800" id="hh-invite-title">Invite Member</div>
@@ -220,7 +220,7 @@ document.write(
 
 
 <div id="txdetail-ov" role="dialog" aria-modal="true" aria-label="Transaction details" onclick="if(event.target===this)closeTxDetail()">
-  <div id="txdetail-sheet"></div>
+  <div id="txdetail-sheet" tabindex="-1"></div>
 </div>
 
 
@@ -257,7 +257,7 @@ document.write(
 </div>
 
 
-<div id="bcreate-ov" onclick="if(event.target===this)bcreateClose()">
+<div id="bcreate-ov" role="dialog" aria-modal="true" aria-label="Create bill" onclick="if(event.target===this)bcreateClose()">
   <div id="bcreate-modal">
     <div class="mhdr">
       <span class="mttl">Add Bill</span>
@@ -533,12 +533,12 @@ document.write(
       <div id="tx-insights-panel" style="display:none;"></div>
 
       <!-- advanced filter sheet overlay -->
-      <div id="txadv-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.38);z-index:300;" onclick="if(event.target===this)txAdvFilterClose()">
+      <div id="txadv-overlay" role="dialog" aria-modal="true" aria-label="Filter transactions" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.38);z-index:300;" onclick="if(event.target===this)txAdvFilterClose()">
         <div id="txadv-sheet" style="position:absolute;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:14px 20px 36px;max-height:88vh;overflow-y:auto;box-shadow:0 -3px 24px rgba(0,0,0,0.13);">
           <div style="width:36px;height:4px;background:#e5e7eb;border-radius:999px;margin:0 auto 18px;"></div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
             <span style="font-weight:800;font-size:17px;">Filters</span>
-            <button onclick="txAdvFilterClose()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--sub);">&#10005;</button>
+            <button id="txadv-close-btn" onclick="txAdvFilterClose()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--sub);">&#10005;</button>
           </div>
 
           <div class="txadv-section">Category</div>
@@ -1028,12 +1028,12 @@ document.write(
       <div id="aset" style="margin-top:var(--md)"></div>
 
       <!-- ── ADVANCED FILTER SHEET ── -->
-      <div id="alerts-filter-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.38);z-index:300;" onclick="if(event.target===this)alertsFilterClose()">
+      <div id="alerts-filter-overlay" role="dialog" aria-modal="true" aria-label="Filter alerts" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.38);z-index:300;" onclick="if(event.target===this)alertsFilterClose()">
         <div id="alerts-filter-sheet" style="position:absolute;bottom:0;left:0;right:0;background:var(--bg);border-radius:20px 20px 0 0;padding:14px 20px 36px;max-height:88vh;overflow-y:auto;box-shadow:0 -3px 24px rgba(0,0,0,0.13);">
           <div style="width:36px;height:4px;background:var(--border);border-radius:999px;margin:0 auto 18px;"></div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
             <span style="font-weight:800;font-size:17px;">Filter Alerts</span>
-            <button onclick="alertsFilterClose()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--sub);">&#10005;</button>
+            <button id="alerts-filter-close-btn" onclick="alertsFilterClose()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--sub);">&#10005;</button>
           </div>
 
           <div class="al-filter-section">System</div>
@@ -1533,7 +1533,7 @@ document.write(
     </div>
 
     <!-- D24 Simulation Details Modal -->
-    <div id="sim-details-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3800;display:none;align-items:center;justify-content:center;padding:var(--lg);" onclick="simDetailsOverlayClick(event)">
+    <div id="sim-details-modal" role="dialog" aria-modal="true" aria-label="Simulation detail" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3800;display:none;align-items:center;justify-content:center;padding:var(--lg);" onclick="simDetailsOverlayClick(event)">
       <div style="background:var(--card);border-radius:var(--r-xl);width:100%;max-width:480px;max-height:82dvh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.3);">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:16px var(--lg) 12px;border-bottom:1px solid var(--border2);">
           <span style="font-size:16px;font-weight:800;color:var(--text);">&#127916; Sim Detail</span>
@@ -1973,7 +1973,7 @@ document.write(
 <button id="fab">+</button>
 
 
-<div id="bi-overlay" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;overflow-y:auto;padding:16px 16px calc(var(--nav) + 20px);">
+<div id="bi-overlay" role="dialog" aria-modal="true" aria-label="Budget import" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;overflow-y:auto;padding:16px 16px calc(var(--nav) + 20px);">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
     <div style="font-weight:800;font-size:var(--fs-cat-title);">Import Budget Template</div>
     <button onclick="disableScrollLock();document.getElementById('bi-overlay').style.display='none'" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--sub);">&#215;</button>
@@ -2131,7 +2131,7 @@ document.write(
 </div>
 
 <!-- Goal category-update modal -->
-<div id="gcm-ov" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:230;display:none;align-items:center;justify-content:center;padding:20px;">
+<div id="gcm-ov" role="dialog" aria-modal="true" aria-label="Update goal category" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:230;display:none;align-items:center;justify-content:center;padding:20px;">
   <div style="background:var(--card);border-radius:var(--r-xl);padding:24px 20px;width:100%;max-width:400px;box-shadow:var(--shadow-lg);">
     <div style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:6px;">Update Goal Category?</div>
     <div id="gcm-msg" style="font-size:13px;color:var(--sub);margin-bottom:18px;line-height:1.5;"></div>
@@ -2139,13 +2139,13 @@ document.write(
       <button onclick="onGoalBulkUpdateAll()" style="padding:13px 16px;border-radius:12px;border:none;background:#7EC8E3;color:#003049;font-size:var(--fs-subtext);font-weight:700;cursor:pointer;font-family:inherit;text-align:left;">&#128260; Update ALL goals with this category</button>
       <button onclick="onGoalBulkUpdateRecent()" style="padding:13px 16px;border-radius:12px;border:none;background:rgba(126,200,227,0.18);color:#003049;border:1.5px solid rgba(0,48,73,0.12);font-size:var(--fs-subtext);font-weight:700;cursor:pointer;font-family:inherit;text-align:left;">&#128197; Update last 12 months only</button>
       <button onclick="onGoalBulkUpdateOne()" style="padding:13px 16px;border-radius:12px;border:none;background:var(--card2);color:var(--text);border:1.5px solid var(--border);font-size:var(--fs-subtext);font-weight:700;cursor:pointer;font-family:inherit;text-align:left;">&#9998; Just this goal</button>
-      <button onclick="onGoalCategoryCancel()" style="padding:11px;border-radius:12px;border:1.5px solid var(--border);background:transparent;color:var(--sub);font-size:var(--fs-caption);font-weight:700;cursor:pointer;font-family:inherit;">Cancel (undo change)</button>
+      <button id="gcm-cancel-btn" onclick="onGoalCategoryCancel()" style="padding:11px;border-radius:12px;border:1.5px solid var(--border);background:transparent;color:var(--sub);font-size:var(--fs-caption);font-weight:700;cursor:pointer;font-family:inherit;">Cancel (undo change)</button>
     </div>
   </div>
 </div>
 
 <!-- Bulk category re-assign modal -->
-<div id="bulk-unified-ov" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:220;display:none;align-items:center;justify-content:center;padding:20px;">
+<div id="bulk-unified-ov" role="dialog" aria-modal="true" aria-label="Bulk update" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:220;display:none;align-items:center;justify-content:center;padding:20px;">
   <div style="background:var(--card);border-radius:var(--r-xl);padding:24px 20px;width:100%;max-width:400px;box-shadow:var(--shadow-lg);">
     <div style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:6px;" id="bulk-unified-title">Update Category?</div>
     <div id="bulk-unified-msg" style="font-size:13px;color:var(--sub);margin-bottom:18px;line-height:1.5;"></div>
@@ -2153,7 +2153,7 @@ document.write(
       <button id="bulk-unified-all" onclick="bulkUnifiedConfirm('all')" style="padding:13px 16px;border-radius:12px;border:none;background:#7EC8E3;color:#003049;font-size:var(--fs-subtext);font-weight:700;cursor:pointer;font-family:inherit;text-align:left;"></button>
       <button id="bulk-unified-year" onclick="bulkUnifiedConfirm('year')" style="padding:13px 16px;border-radius:12px;border:none;background:rgba(126,200,227,0.18);color:#003049;border:1.5px solid rgba(0,48,73,0.12);font-size:var(--fs-subtext);font-weight:700;cursor:pointer;font-family:inherit;text-align:left;">&#128197; Update last 12 months only</button>
       <button onclick="bulkUnifiedConfirm('one')" id="bulk-unified-one" style="padding:13px 16px;border-radius:12px;border:none;background:var(--card2);color:var(--text);border:1.5px solid var(--border);font-size:var(--fs-subtext);font-weight:700;cursor:pointer;font-family:inherit;text-align:left;"></button>
-      <button onclick="bulkUnifiedCancel()" style="padding:11px;border-radius:12px;border:1.5px solid var(--border);background:transparent;color:var(--sub);font-size:var(--fs-caption);font-weight:700;cursor:pointer;font-family:inherit;">Cancel (undo change)</button>
+      <button id="bulk-unified-cancel" onclick="bulkUnifiedCancel()" style="padding:11px;border-radius:12px;border:1.5px solid var(--border);background:transparent;color:var(--sub);font-size:var(--fs-caption);font-weight:700;cursor:pointer;font-family:inherit;">Cancel (undo change)</button>
     </div>
   </div>
 </div>
