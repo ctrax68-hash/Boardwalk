@@ -651,44 +651,39 @@ function open() {
 toast('\U0001F3E4 Connecting to bank...');
 _fetchLinkToken().then(function(r) {
 if (r.hosted_link_url) {
-// Native app path (Hosted Link). There is no frontend onSuccess/onExit
-// for Hosted Link — Plaid delivers the result to plaid-webhook via the
-// SESSION_FINISHED webhook, server-side, regardless of what happens in
-// this webview. All this code needs to do is hand the URL to native code
-// to open in an ASWebAuthenticationSession.
-//
-// REQUIRED NATIVE BRIDGE: the native wrapper must implement
-// window.__boardwalkOpenHostedLink(url), which should:
-//   1. Open `url` in an ASWebAuthenticationSession (NOT a plain WKWebView
-//      — Plaid requires a secure external user-agent session for Hosted
-//      Link, and Chase's App-to-App OAuth won't work correctly otherwise)
-//   2. Register "boardwalk" as the callback URL scheme so the session's
-//      completion handler fires when Plaid redirects to
-//      boardwalk://plaid-oauth-complete
-//   3. On completion (regardless of success/failure/cancellation — the
-//      redirect fires either way per Plaid's docs), call
-//      PlaidLinkManager.onHostedLinkReturn() so the app can refresh its
-//      bank-connection state, since the actual success/failure already
-//      happened server-side via the webhook by the time this fires.
+// Hosted Link (now used for both native and web/PWA — see
+// create-plaid-link-token). There is no frontend onSuccess/onExit for
+// Hosted Link — Plaid delivers the result to plaid-webhook via the
+// SESSION_FINISHED webhook, server-side, regardless of what happens to
+// this browser tab afterward. That's what makes this survive an
+// installed Home Screen PWA: iOS routes an OAuth institution's (Chase,
+// etc.) redirect into a disconnected Safari tab instead of back into
+// the standalone app instance, so there's no reliable in-page callback
+// to hook — the server-side webhook completes the connection either
+// way, and this app just needs to notice a new bank appeared next time
+// it's in the foreground (see checkPendingHostedLink/onHostedLinkReturn
+// below).
 if (typeof window.__boardwalkOpenHostedLink === 'function') {
+// Native app bridge (ASWebAuthenticationSession) — kept for a future
+// native build; not used by the current web/PWA app.
 window.__boardwalkOpenHostedLink(r.hosted_link_url);
-} else {
-dbg('[Plaid] Native app detected but window.__boardwalkOpenHostedLink is not implemented.');
-toast('\u26A0 Bank connection not available in this build yet.');
-}
 return;
 }
-// Web/PWA path — unchanged from before.
+try {
+localStorage.setItem('kevt_plaid_hosted_link_pending', JSON.stringify({
+ts: Date.now(),
+household_id: _v2Household ? _v2Household.id : null
+}));
+} catch(e) {}
+window.location.href = r.hosted_link_url;
+return;
+}
+// Fallback: embedded Link. Only reachable if the edge function ever
+// returns no hosted_link_url. Fine for non-OAuth institutions in a plain
+// browser tab; OAuth institutions from an installed PWA icon would still
+// hit the dead end Hosted Link above exists to avoid.
 window._loadPlaidSDK(function() {
 if (!window.Plaid) { toast('\u26A0 Plaid Link not available.'); return; }
-// Persist the link_token so it survives the full page reload OAuth
-// institutions (Chase, Bank of America, etc.) trigger when they redirect
-// the user back after authenticating on the bank's own site. Without
-// this, there's no way to resume Link on return — see
-// _resumeOAuthIfNeeded() below, which reads this back on app boot. Note:
-// this web path only works in a genuine Safari tab — it does NOT work
-// when Boardwalk is opened as an installed Home Screen PWA icon, since
-// that container has no tab for Chase's OAuth redirect to return to.
 try { sessionStorage.setItem('kevt_plaid_link_token', r.link_token); } catch(e) {}
 var handler = window.Plaid.create({
 token:     r.link_token,
@@ -752,6 +747,7 @@ _saveState();
 _renderConnectedUI();
 if(_banks.length > priorCount) {
 toast('\u2705 Bank connected!');
+try { localStorage.removeItem('kevt_plaid_hosted_link_pending'); } catch(e) {}
 sync().catch(function(e) { dbg('[Plaid] post-link sync error: ' + e.message); });
 } else if(_banks.length === priorCount) {
 dbg('[Plaid] onHostedLinkReturn: no new bank found — session may have been cancelled or webhook has not landed yet.');
@@ -761,6 +757,35 @@ dbg('[Plaid] onHostedLinkReturn refresh error: ' + e.message);
 toast('&#9888; Could not confirm connection status — check Settings to verify your bank linked.');
 });
 }, 1500);
+}
+// ── Web/PWA Hosted Link pending-check ────────────────────────────────────
+// Mirrors onHostedLinkReturn above, but triggered by the app simply coming
+// back to the foreground rather than a native completion callback —
+// necessary because on an installed Home Screen PWA, iOS can route an OAuth
+// institution's redirect into a disconnected Safari tab instead of back
+// into this app instance, so there is no reliable in-page callback to hook.
+// The bank link itself already completed server-side (via the
+// plaid-webhook SESSION_FINISHED handler, now registered for every Hosted
+// Link session, not just native ones) by the time this runs — this just
+// needs to notice it.
+var PENDING_HOSTED_LINK_KEY = 'kevt_plaid_hosted_link_pending';
+var PENDING_HOSTED_LINK_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+function _readPendingHostedLink() {
+try {
+var raw = localStorage.getItem(PENDING_HOSTED_LINK_KEY);
+if (!raw) return null;
+var parsed = JSON.parse(raw);
+if (!parsed || !parsed.ts || (Date.now() - parsed.ts) > PENDING_HOSTED_LINK_MAX_AGE_MS) {
+localStorage.removeItem(PENDING_HOSTED_LINK_KEY);
+return null;
+}
+return parsed;
+} catch(e) { return null; }
+}
+function checkPendingHostedLink() {
+var pending = _readPendingHostedLink();
+if (!pending || !_v2Session || !_v2Household) return;
+onHostedLinkReturn();
 }
 function _resumeOAuthIfNeeded() {
 if (!_isOAuthRedirectReturn()) return;
@@ -1000,9 +1025,19 @@ onExit:         _onExit,
 onEvent:        _onEvent,
 accountSync:   function(){ return sync(); },
 resumeOAuthIfNeeded: _resumeOAuthIfNeeded,
-onHostedLinkReturn: onHostedLinkReturn
+onHostedLinkReturn: onHostedLinkReturn,
+checkPendingHostedLink: checkPendingHostedLink
 };
 })();
+// Re-check for a completed Hosted Link connection whenever the app comes
+// back to the foreground — covers the case where an installed Home Screen
+// PWA had an OAuth bank redirect land in a disconnected Safari tab instead
+// of back here (see checkPendingHostedLink for the full explanation).
+document.addEventListener('visibilitychange', function(){
+if(!document.hidden) {
+try { PlaidLinkManager.checkPendingHostedLink(); } catch(e) {}
+}
+}, false);
 
 function unlinkBankAccount() {
 return new Promise(function(resolve, reject) {
@@ -47089,6 +47124,7 @@ __obLog('[7] resumeOAuthIfNeeded() returned');
 } else {
 __obLog('[6-ALT] resumeOAuthIfNeeded is NOT a function: ' + typeof (PlaidLinkManager && PlaidLinkManager.resumeOAuthIfNeeded));
 }
+try { if(typeof PlaidLinkManager.checkPendingHostedLink === 'function') PlaidLinkManager.checkPendingHostedLink(); } catch(e) { dbg('[Plaid] checkPendingHostedLink boot error: '+e.message); }
 autoSyncOnLoad();
 __obLog('[8] autoSyncOnLoad() done');
 checkShowTutorial();
