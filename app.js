@@ -547,7 +547,7 @@ if(d.error) throw new Error(d.error);
 return d; // { item_id, institution_name, accounts }
 });
 }
-function _syncTransactions(itemId) {
+function _syncTransactions(itemId, resetCursor) {
 if(!_v2Session || !_v2Household) return Promise.reject(new Error('Not authenticated'));
 return fetch(SUPABASE_URL + '/functions/v1/sync-plaid-transactions', {
 method: 'POST',
@@ -557,12 +557,26 @@ headers: {
 },
 body: JSON.stringify({
 household_id: _v2Household.id,
-item_id:      itemId || null
+item_id:      itemId || null,
+reset_cursor: !!resetCursor
 })
 }).then(function(r) { return r.json(); }).then(function(d) {
 if(d.error) throw new Error(d.error);
 return d; // { added, modified, removed, items }
 });
+}
+// Set after clearAll() wipes cloud/local transaction data (see
+// _clearAllWithCloud) so the NEXT sync ignores each item's stored Plaid
+// cursor and does a full re-pull instead of an empty incremental one — a
+// cursor-based sync otherwise correctly returns "nothing changed since last
+// sync," which after a data clear leaves the local store empty forever even
+// though the bank connection itself is fine.
+var FORCE_PLAID_RESYNC_KEY = 'kevt_plaid_force_resync';
+function _hasForceResync() {
+try { return localStorage.getItem(FORCE_PLAID_RESYNC_KEY) === '1'; } catch(e) { return false; }
+}
+function _clearForceResync() {
+try { localStorage.removeItem(FORCE_PLAID_RESYNC_KEY); } catch(e) {}
 }
 var _MOCK_INSTITUTIONS = [
 { name: 'Chase',       color: '#117ACA' },
@@ -948,9 +962,11 @@ function syncBank(bankId) {
 var bank = null;
 for(var i=0; i<_banks.length; i++) { if(_banks[i].id === bankId) { bank = _banks[i]; break; } }
 if(!bank) { toast('Bank not found.'); return; }
+var forceResync = _hasForceResync();
 toast('\u21BA Syncing ' + ((bank.institution&&bank.institution.name)||'bank') + '...');
-_syncTransactions(bank.item_id || null).then(function(syncResult) {
+_syncTransactions(bank.item_id || null, forceResync).then(function(syncResult) {
 var added = _processSync(bankId, syncResult);
+if(forceResync) _clearForceResync();
 toast('\u21BA Synced ' + ((bank.institution&&bank.institution.name)||'bank') + ' \u2014 ' + (added||0) + ' new transaction' + (added===1?'':'s') + '.');
 _renderConnectedUI();
 }).catch(function(e) {
@@ -959,13 +975,15 @@ toast('\u26A0 Sync failed: ' + e.message);
 }
 function sync() {
 if(_banks.length === 0) { toast('No bank connected.'); return Promise.resolve({ added: 0 }); }
+var forceResync = _hasForceResync();
 toast('\u21BA Syncing all accounts...');
-return _syncTransactions(null).then(function(syncResult) {
+return _syncTransactions(null, forceResync).then(function(syncResult) {
 var totalAdded = 0;
 _banks.forEach(function(bank) {
 var added = _processSync(bank.id, syncResult);
 totalAdded += (added||0);
 });
+if(forceResync) _clearForceResync();
 toast('\u21BA Sync complete \u2014 ' + totalAdded + ' new transaction' + (totalAdded===1?'':'s') + '.');
 _renderConnectedUI();
 return { added: totalAdded };
@@ -46976,6 +46994,12 @@ try{localStorage.setItem(STARTER_KEY,'false');}catch(e){}
 AppState.lastCloudPull = null;
 AppState.lastCloudPush = null;
 try { setSyncMeta({ lastIncrementalSync: null, lastFullSync: null }); } catch(e){}
+// Same problem applies to any connected bank: its Plaid cursor still points
+// past the transaction history that was just deleted, so the next sync
+// would correctly report "nothing new" and leave the freshly-cleared local
+// store empty. Flag the next Plaid sync to ignore stored cursors and pull
+// full history again (see FORCE_PLAID_RESYNC_KEY in PlaidLinkManager).
+try{localStorage.setItem('kevt_plaid_force_resync','1');}catch(e){}
 S=AppState;lsSave();
 toast('&#10003; Cloud and local data cleared.');
 setTimeout(function(){ window.location.reload(); },300);
