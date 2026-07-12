@@ -9275,3 +9275,8 @@ cursor:pointer;font-family:inherit;min-height:32px;
 .d18-check-fail{color:#d72f2f;}
 .d18-modal-footer{padding:12px 20px 16px;border-top:1px solid var(--border,rgba(0,0,0,.06));}
 .d18-modal-close-btn{width:100%;padding:11px;border-radius:var(--r-md,10px);background:var(--card2,#F0F1F3);color:var(--text,#1A1A1A);font-weight:600;font-size:var(--fs-subtext,13px);border:none;cursor:pointer;font-family:inherit;min-height:44px;}
+
+/* App Switcher privacy blur — applied synchronously (no transition) on
+   visibilitychange so iOS/Android don't snapshot unblurred financial data
+   into the recent-apps thumbnail. */
+#shell.bw-privacy-blur{filter:blur(28px);pointer-events:none;user-select:none;}

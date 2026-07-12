@@ -18257,6 +18257,100 @@ return true;
 } catch(e) { dbg('[V2] restoreSession error: '+e.message); }
 return false;
 }
+// ── App Switcher privacy blur + idle re-entry lock ──────────────────────────
+// Two independent protections for a finance app on a shared/lost device:
+// 1) blur financial content the instant the OS takes an app-switcher snapshot
+// 2) require the account password again after N minutes of inactivity
+var _lockTimeoutMs  = 5*60*1000; // 5 minutes idle
+var _lockLastActive = Date.now();
+var _lockHiddenAt   = null;
+var _lockIsShown    = false;
+function _lockEligible() {
+return !!(_v2User && !_v2GuestMode && !_localSignOutInFlight);
+}
+function bwMarkActivity() {
+_lockLastActive = Date.now();
+}
+['mousedown','keydown','touchstart','scroll'].forEach(function(ev){
+document.addEventListener(ev, bwMarkActivity, {passive:true});
+});
+function bwApplyBlur(on) {
+var shell = document.getElementById('shell');
+if(shell) shell.classList.toggle('bw-privacy-blur', !!on);
+}
+function bwShowLock() {
+if(_lockIsShown || !_lockEligible()) return;
+_lockIsShown = true;
+bwApplyBlur(true);
+var ov = document.getElementById('lock-ov');
+if(!ov) return;
+document.getElementById('lock-email').textContent = _v2User.email || '';
+document.getElementById('lock-pass').value = '';
+document.getElementById('lock-err').textContent = '';
+ov.style.display = 'flex';
+enableScrollLock();
+setTimeout(function(){ var p=document.getElementById('lock-pass'); if(p) p.focus(); }, 150);
+}
+function bwHideLock() {
+_lockIsShown = false;
+bwApplyBlur(false);
+var ov = document.getElementById('lock-ov');
+if(ov) ov.style.display = 'none';
+disableScrollLock();
+_lockLastActive = Date.now();
+_lockHiddenAt = null;
+}
+async function unlockApp() {
+var pass = (document.getElementById('lock-pass')||{value:''}).value;
+var errEl = document.getElementById('lock-err');
+if(!pass) { if(errEl) errEl.textContent = 'Enter your password.'; return; }
+if(!_v2User || !_v2User.email) { bwHideLock(); return; }
+var client = sb || sbInit();
+if(!client) { if(errEl) errEl.textContent = 'Can\'t verify — check your connection and try again.'; return; }
+var btn = document.getElementById('lock-unlock-btn');
+if(btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+try {
+var result = await client.auth.signInWithPassword({ email: _v2User.email, password: pass });
+if(result.error) throw result.error;
+bwHideLock();
+} catch(e) {
+if(errEl) errEl.textContent = 'Incorrect password. Try again.';
+var p = document.getElementById('lock-pass');
+if(p) { p.value=''; p.focus(); }
+} finally {
+if(btn) { btn.disabled = false; btn.textContent = 'Unlock'; }
+}
+}
+function lockScreenSignOut() {
+_lockIsShown = false;
+bwApplyBlur(false);
+var ov = document.getElementById('lock-ov');
+if(ov) ov.style.display = 'none';
+disableScrollLock();
+authSignOut();
+}
+document.addEventListener('visibilitychange', function(){
+if(document.hidden) {
+// Snapshot happens synchronously on backgrounding — blur immediately,
+// regardless of idle time, so the OS never captures readable data.
+if(_lockEligible()) bwApplyBlur(true);
+_lockHiddenAt = Date.now();
+} else {
+var idleMs = Date.now() - _lockLastActive;
+var awayMs = _lockHiddenAt ? (Date.now() - _lockHiddenAt) : 0;
+if(_lockEligible() && (idleMs >= _lockTimeoutMs || awayMs >= _lockTimeoutMs)) {
+bwShowLock();
+} else if(!_lockIsShown) {
+bwApplyBlur(false);
+}
+_lockHiddenAt = null;
+}
+}, false);
+setInterval(function(){
+if(!document.hidden && _lockEligible() && !_lockIsShown && (Date.now() - _lockLastActive) >= _lockTimeoutMs) {
+bwShowLock();
+}
+}, 30000);
 async function v2CreateHousehold(name) {
 var sb = sbInit(); if(!sb || !_v2User) return null;
 try {
