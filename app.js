@@ -3023,7 +3023,7 @@ function setAlertMode(mode){
 /* ── advanced filter sheet ── */
 var _alertsFilterTrigger = null;
 function alertsFilterOpen(){
-  _alertsFilterTrigger = document.activeElement;
+  _alertsFilterTrigger = _captureFocusTrigger();
   document.getElementById('alerts-filter-overlay').style.display='flex';
   document.getElementById('alerts-filter-overlay').style.alignItems='flex-end';
   setTimeout(function(){ var closeBtn=document.getElementById('alerts-filter-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
@@ -3531,6 +3531,27 @@ var content = document.getElementById('content');
 if(content) content.removeAttribute('aria-hidden');
 }
 }
+// iOS Safari inconsistently moves keyboard/DOM focus on tap — some elements
+// pick it up, most (plain <button>s in particular) don't, so
+// document.activeElement can easily be *stale*: still pointing at whatever
+// element happened to last receive focus, not the one the user just tapped
+// to open this modal. A stale read is worse than no read — it silently
+// "restores" focus to the wrong control on close. The just-tapped element
+// (tracked here via pointerdown, which always fires fresh on the current
+// gesture) is the more reliable signal; document.activeElement is only
+// trusted as a fallback for purely keyboard-driven opens (no pointer
+// event at all, e.g. Tab+Enter) or once the pointer signal goes stale.
+var _lastPointerTarget = null;
+var _lastPointerTargetAt = 0;
+document.addEventListener('pointerdown', function(e){
+_lastPointerTarget = e.target && e.target.closest ? e.target.closest('button, a, [role="button"], [tabindex]') : null;
+_lastPointerTargetAt = Date.now();
+}, true);
+function _captureFocusTrigger(){
+if(_lastPointerTarget && (Date.now() - _lastPointerTargetAt) < 1000) return _lastPointerTarget;
+var active = document.activeElement;
+return (active && active !== document.body && active !== document.documentElement) ? active : null;
+}
 function editTx(id){ openModal(id); }
 function toggleRecurFields(){
 var chk = document.getElementById('frecur');
@@ -3539,7 +3560,7 @@ document.getElementById('frecur-fields').style.display = chk && chk.checked ? 'b
 var _modalTrigger = null;
 function openModal(id){
 enableScrollLock();
-_modalTrigger = document.activeElement;
+_modalTrigger = _captureFocusTrigger();
 editId=id;
 _routerState.editingId = id;
 var tx=id?AppState.transactions.find(function(t){return t.id===id;}):null;
@@ -3775,7 +3796,7 @@ function setTxFilter(f){
 /* ── Advanced filter helpers ── */
 var _txAdvFilterTrigger = null;
 function txAdvFilterOpen(){
-  _txAdvFilterTrigger = document.activeElement;
+  _txAdvFilterTrigger = _captureFocusTrigger();
   _txAdvBuildCatChips();
   document.getElementById('txadv-overlay').style.display='flex';
   document.getElementById('txadv-overlay').style.alignItems='flex-end';
@@ -6827,7 +6848,7 @@ function showBudgetMsg(msg, ok) {
 var overlay = document.getElementById('bi-overlay');
 var wizard  = document.getElementById('bi-wizard');
 if(overlay) overlay.style.display = 'block';
-if(!_biTrigger) _biTrigger = document.activeElement;
+if(!_biTrigger) _biTrigger = _captureFocusTrigger();
 if(wizard) wizard.innerHTML =
 '<div style="text-align:center;padding:48px var(--lg)">'
 +'<div style="font-size:42px;margin-bottom:var(--md)">'+(ok?'&#9989;':'&#10060;')+'</div>'
@@ -6842,7 +6863,7 @@ function budgetImportStep1(event) {
 dbg('budgetImportStep1 fired');
 var file = event.target.files[0];
 if (!file) { dbg('no file selected'); return; }
-_biTrigger = document.activeElement;
+_biTrigger = _captureFocusTrigger();
 enableScrollLock();
 dbg('file: ' + file.name);
 var overlay = document.getElementById('bi-overlay');
@@ -7827,7 +7848,7 @@ document.getElementById('cfm-msg').textContent = msg;
 document.getElementById('cfm-ok').textContent = okLabel || 'Delete';
 document.getElementById('cfm-ok').style.background = (okLabel && okLabel !== 'Delete') ? 'var(--gd)' : 'var(--red)';
 _cfmCb = cb;
-_cfmTrigger = document.activeElement;
+_cfmTrigger = _captureFocusTrigger();
 enableScrollLock();
 document.getElementById('cfm-ov').style.display = 'flex';
 var cancelBtn = document.getElementById('cfm-cancel');
@@ -8622,7 +8643,7 @@ var _gcmOriginalGoal = null;
 
 var _gcmTrigger = null;
 function openGoalCategoryModal(g, oldCat, newCat, originalGoal) {
-_gcmTrigger = document.activeElement;
+_gcmTrigger = _captureFocusTrigger();
 _gcmGoal         = g;
 _gcmOldCat       = oldCat;
 _gcmNewCat       = newCat;
@@ -8711,7 +8732,7 @@ var _bulkBillCatCtx = null;
 var _bulkUnifiedTrigger = null;
 function _showBulkUnified(title, allLabel, oneLabel, msg, onAll, onYear, onOne, onCancel) {
 _bulkUnifiedCtx = { onAll:onAll, onYear:onYear, onOne:onOne, onCancel:onCancel };
-_bulkUnifiedTrigger = document.activeElement;
+_bulkUnifiedTrigger = _captureFocusTrigger();
 document.getElementById('bulk-unified-title').textContent = title;
 document.getElementById('bulk-unified-all').textContent   = allLabel;
 document.getElementById('bulk-unified-one').textContent   = oneLabel;
@@ -9222,7 +9243,7 @@ var _bsetupTrigger = null;
 function bsetupOpen(){
 var panelAlreadyOpen = document.getElementById('bsetup-ov') && document.getElementById('bsetup-ov').classList.contains('open');
 if(panelAlreadyOpen){ dbg('[BSETUP] Already open — ignoring duplicate open call'); return; }
-_bsetupTrigger = document.activeElement;
+_bsetupTrigger = _captureFocusTrigger();
 enableScrollLock();
 _bsetupStep=0;
 _bsetupDir='forward';
@@ -15778,7 +15799,7 @@ ov.innerHTML=html;document.body.appendChild(ov);
 var _bcStep=0,_bcDir='forward',_bcDraft={name:'',amount:0,cat:'',freq:'monthly',day:1,keyword:'',autoPay:false};
 var _bcTrigger = null;
 function bcreateOpen(suggestion){
-_bcTrigger = document.activeElement;
+_bcTrigger = _captureFocusTrigger();
 enableScrollLock();
 _bcDraft=suggestion?{name:suggestion.name||'',amount:suggestion.amt||0,cat:suggestion.cat||'',freq:suggestion.freq||'monthly',day:1,keyword:'',autoPay:false}:{name:'',amount:0,cat:'',freq:'monthly',day:1,keyword:'',autoPay:false};
 var cats=CATS&&CATS.expense?CATS.expense:[];
@@ -16342,7 +16363,7 @@ var _catPickerTrigger = null;
 function catPickerOpen(txId, currentCat, cb) {
 _catPickerTxId = txId;
 _catPickerCb   = cb;
-_catPickerTrigger = document.activeElement;
+_catPickerTrigger = _captureFocusTrigger();
 catPickerRender(currentCat, '');
 document.getElementById('catpicker-ov').classList.add('open');
 var s = document.getElementById('catpicker-search');
@@ -16413,7 +16434,7 @@ var _txDetailTrigger = null;
 function showTxDetail(id) {
 var tx = (AppState.transactions||[]).find(function(t){return t.id===id;});
 if(!tx) return;
-_txDetailTrigger = document.activeElement;
+_txDetailTrigger = _captureFocusTrigger();
 var cr       = catForTx(tx);
 var isDup    = isDuplicateTx(tx);
 var recur    = detectRecurring(tx);
@@ -16897,7 +16918,7 @@ _anCatTrigger = null;
 function showAnCatDetail(cat) {
 var ov = document.getElementById('an-cat-ov');
 if(!ov) return;
-_anCatTrigger = document.activeElement;
+_anCatTrigger = _captureFocusTrigger();
 var txs = mTx();
 var allTxs = AppState.transactions||[];
 var catTxs = txs.filter(function(t){return t.type==='expense'&&t.category===cat;});
@@ -16984,7 +17005,7 @@ _anMerchTrigger = null;
 function showAnMerchDetail(merchant) {
 var ov = document.getElementById('an-merch-ov');
 if(!ov) return;
-_anMerchTrigger = document.activeElement;
+_anMerchTrigger = _captureFocusTrigger();
 var txs = (AppState.transactions||[]).filter(function(t){
 return (t.merchantNorm||t.merchantRaw||t.merchant||'')===merchant;
 });
@@ -18003,7 +18024,7 @@ btn.style.opacity = loading ? '0.6' : '1';
 }
 var _authTrigger = null;
 function authShowOverlay() {
-_authTrigger = document.activeElement;
+_authTrigger = _captureFocusTrigger();
 enableScrollLock();
 var ov = document.getElementById('auth-ov');
 if(ov) { ov.classList.add('open'); authShowView('login'); }
@@ -19629,7 +19650,7 @@ if(btn) btn.disabled=false;
 // ── hhInviteOpen / hhInviteClose with confirmation screen support ──────
 var _hhInviteTrigger = null;
 function hhInviteOpen() {
-_hhInviteTrigger = document.activeElement;
+_hhInviteTrigger = _captureFocusTrigger();
 enableScrollLock();
 var el = document.getElementById('hh-invite-modal');
 if(el) el.classList.add('open');
@@ -19667,7 +19688,7 @@ var _hhPendingInviteId = null;
 var _hhAcceptTrigger = null;
 function hhAcceptOpen(inviteId, hhName) {
 _hhPendingInviteId = inviteId;
-_hhAcceptTrigger = document.activeElement;
+_hhAcceptTrigger = _captureFocusTrigger();
 enableScrollLock();
 var el = document.getElementById('hh-accept-overlay');
 if(el) el.classList.add('open');
@@ -20829,7 +20850,7 @@ function hspOpen() {
 var panel    = document.getElementById('household-settings-panel');
 var backdrop = document.getElementById('hsp-backdrop');
 var toggle   = document.getElementById('hsp-toggle');
-_hspTrigger = document.activeElement;
+_hspTrigger = _captureFocusTrigger();
 if(panel)    { panel.classList.add('open'); }
 if(backdrop) { backdrop.classList.add('open'); }
 if(toggle)   { toggle.classList.add('open'); }
@@ -22808,7 +22829,7 @@ var _settingsPanelDraft = null; // working copy of settings while panel is open
 var _settingsPanelTrigger = null;
 async function openSettingsPanel() {
 if(AppState.currentUserRole !== 'owner') { toast('Only the household owner can manage settings.'); return; }
-_settingsPanelTrigger = document.activeElement;
+_settingsPanelTrigger = _captureFocusTrigger();
 enableScrollLock();
 await loadSettingsForPanel();
 _settingsPanelDraft = Object.assign({
@@ -49492,7 +49513,7 @@ var _csTrigger = null;
 function openCashflowSimulator() {
   var overlay = csEl('cashflow-sim-modal-overlay');
   if (!overlay) return;
-  _csTrigger = document.activeElement;
+  _csTrigger = _captureFocusTrigger();
   overlay.style.display = 'flex';
   enableScrollLock();
   window.cashflowSimulationMode = true;
@@ -49528,7 +49549,7 @@ function openSimulationDetailsModal(item) {
   _csCurrentItem = item;
   var modal = csEl('sim-details-modal');
   if (!modal) return;
-  _simDetailsTrigger = document.activeElement;
+  _simDetailsTrigger = _captureFocusTrigger();
   renderSimulationDetails(item);
   modal.style.display = 'flex';
   setTimeout(function(){ var closeBtn=csEl('sim-details-close-btn'); if(closeBtn) closeBtn.focus(); }, 50);
@@ -50472,7 +50493,7 @@ var _importModalTrigger = null;
 win.openTransactionImportDialog = function() {
   var overlay = document.getElementById('import-modal-overlay');
   if (!overlay) return;
-  _importModalTrigger = document.activeElement;
+  _importModalTrigger = _captureFocusTrigger();
   // Reset state
   var els = ['import-file-info','import-row-info','import-col-section','import-summary'];
   els.forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; });
@@ -50790,7 +50811,7 @@ var _linkModalTrigger = null;
 win.openAccountLinkDialog = function() {
   var overlay = linkEl('link-modal-overlay');
   if (!overlay) return;
-  _linkModalTrigger = document.activeElement;
+  _linkModalTrigger = _captureFocusTrigger();
   // Reset to institution selection state
   linkShow('link-select-state');
   linkHide('link-loading');
@@ -51302,7 +51323,7 @@ win.openActionDetailsModal = function(btnOrAction) {
   win._admCurrentAction = action;
   var overlay = actEl('action-details-modal-overlay');
   if (!overlay) return;
-  win._admTrigger = document.activeElement;
+  win._admTrigger = _captureFocusTrigger();
   var isBlocked   = !!(action._blocked);
   var explainMap  = win._lastExplainMap || {};
   var exp         = explainMap[action.id] || {};
@@ -51659,7 +51680,7 @@ win.openInsightDetailsModal = function(btnOrInsight) {
   }
   if (!insight) return;
   win._d16CurrentInsight = insight;
-  win._d16Trigger = document.activeElement;
+  win._d16Trigger = _captureFocusTrigger();
 
   var titleEl = d16El('d16-modal-title-text');
   var bodyEl  = d16El('d16-modal-body');
@@ -52537,7 +52558,7 @@ win.openAuditEventDetailsModal = function(elOrEvent) {
   }
   if (!event) return;
   win._d18CurrentEvent = event;
-  win._d18Trigger = document.activeElement;
+  win._d18Trigger = _captureFocusTrigger();
 
   var titleEl = aEl('d18-modal-title-text');
   var bodyEl  = aEl('audit-details-content');
@@ -52904,7 +52925,7 @@ window._compassOpen = function(id) {
   var sheet = document.getElementById(id);
   var bd    = document.getElementById(id + '-bd');
   if (!sheet || !bd) return;
-  _compassTrigger = document.activeElement;
+  _compassTrigger = _captureFocusTrigger();
   _compassActiveModal = id;
   bd.classList.add('open');
   sheet.classList.add('open');
