@@ -1020,10 +1020,36 @@ var idx = -1;
 for(var i=0; i<_banks.length; i++) { if(_banks[i].id === bankId) { idx = i; break; } }
 if(idx === -1) { toast('Bank not found.'); return; }
 var name = (_banks[idx].institution && _banks[idx].institution.name) || 'Bank';
+var itemId = _banks[idx].item_id;
+function removeLocally() {
 _banks.splice(idx, 1);
 _saveState();
-toast(name + ' disconnected.');
 _renderConnectedUI();
+}
+if(!itemId || !_v2Session || !_v2Household) {
+// No server-side record to revoke (legacy/local-only bank) — just remove.
+removeLocally();
+toast(name + ' disconnected.');
+return;
+}
+toast('⏳ Disconnecting ' + name + '...');
+fetch(SUPABASE_URL + '/functions/v1/unlink-plaid-item', {
+method: 'POST',
+headers: {
+'Authorization': 'Bearer ' + _v2Session.access_token,
+'Content-Type':  'application/json'
+},
+body: JSON.stringify({ household_id: _v2Household.id, item_id: itemId })
+}).then(function(r) { return r.json(); }).then(function(d) {
+if(d.error) throw new Error(d.error);
+removeLocally();
+toast(name + ' disconnected.');
+}).catch(function(e) {
+// Server-side revoke failed — remove locally anyway so the user isn't
+// stuck, but be honest that the underlying connection may still be live.
+removeLocally();
+toast('⚠ ' + name + ' removed here, but the server-side disconnect failed (' + e.message + '). It may still show as connected if you reconnect the same bank.');
+});
 }
 function _renderConnectedUI() {
 var card = document.getElementById('plaid-status-card');
