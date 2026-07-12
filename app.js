@@ -973,6 +973,22 @@ _renderConnectedUI();
 toast('\u26A0 Sync failed: ' + e.message);
 });
 }
+function forceResyncBank(bankId) {
+var bank = null;
+for(var i=0; i<_banks.length; i++) { if(_banks[i].id === bankId) { bank = _banks[i]; break; } }
+if(!bank) { toast('Bank not found.'); return; }
+var name = (bank.institution && bank.institution.name) || 'this bank';
+showCfm('Re-import full transaction history for ' + name + '? This re-checks everything Plaid has on file for this account — it will not create duplicates of transactions already imported.', 'Force Resync', function(){
+toast('↺ Re-syncing full history for ' + name + '...');
+_syncTransactions(bank.item_id || null, true).then(function(syncResult) {
+var added = _processSync(bankId, syncResult);
+toast('↺ Resynced ' + name + ' — ' + (added||0) + ' transaction' + (added===1?'':'s') + ' imported.');
+_renderConnectedUI();
+}).catch(function(e) {
+toast('⚠ Resync failed: ' + e.message);
+});
+});
+}
 function sync() {
 if(_banks.length === 0) { toast('No bank connected.'); return Promise.resolve({ added: 0 }); }
 var forceResync = _hasForceResync();
@@ -1030,7 +1046,10 @@ return '<div style="background:var(--card2);border-radius:10px;padding:10px 12px
 +'</div>'
 +'</div>'
 +acctRows
-+'<div style="font-size:10px;color:var(--sub);margin-top:5px;">Last sync: '+lastSync+'</div>'
++'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:5px;">'
++'<span style="font-size:10px;color:var(--sub);">Last sync: '+lastSync+'</span>'
++'<span onclick="PlaidLinkManager.forceResyncBank(\''+bank.id+'\')" style="font-size:10px;color:var(--sub);text-decoration:underline;cursor:pointer;" role="button" tabindex="0" aria-label="Force full transaction history resync for this bank" title="Re-pull full transaction history from this bank">Force full resync</span>'
++'</div>'
 +'</div>';
 }).join('');
 card.innerHTML =
@@ -1054,6 +1073,7 @@ return {
 open:           open,
 sync:           sync,
 syncBank:       syncBank,
+forceResyncBank: forceResyncBank,
 disconnect:     disconnect,
 disconnectBank: disconnectBank,
 load:           load,
