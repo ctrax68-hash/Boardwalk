@@ -20146,6 +20146,7 @@ return _v2User && _v2Household && _v2Household.owner_user_id === _v2User.id;
 }
 var _hhRenderDebounceTimer = null;
 var _hhRenderInFlight = false;
+var _hhLastRenderedHtml = null;
 function hhRenderSettings() {
 // This coalesces rapid repeated calls (e.g. the loadHouseholdMembers()/
 // loadPendingInvites() follow-up renders below, or any other concurrent
@@ -20168,7 +20169,7 @@ function _hhRenderSettingsImpl() {
 var container = document.getElementById('hh-settings-section');
 if(!container) return;
 if(!_v2User || _v2GuestMode) {
-container.innerHTML = '';
+if(_hhLastRenderedHtml !== '') { container.innerHTML = ''; _hhLastRenderedHtml = ''; }
 return;
 }
 var hh = _v2Household;
@@ -20263,10 +20264,25 @@ html += '<div style="margin-top:var(--sm)">'
 +'</div>';
 }
 html += '</div></div>';
+// Skip the DOM rebuild entirely when nothing actually changed. This
+// function gets called far more often than the household/members data
+// actually changes (any renderAll() call re-renders whatever page is
+// active, including this one, for reasons that have nothing to do with
+// household state — sync completions, presence heartbeats, cache
+// invalidation, etc.) — container.innerHTML = html unconditionally
+// destroyed and rebuilt the whole section on every one of those calls,
+// which is exactly what showed up as constant visible flashing/glitching
+// on the Members screen even though the underlying data was static.
+if(html !== _hhLastRenderedHtml) {
+_hhLastRenderedHtml = html;
 container.innerHTML = html;
 var switcherEl = document.createElement('div');
 switcherEl.id = 'household-switcher';
 container.appendChild(switcherEl);
+}
+// Cheap and independent of the guard above — looks up the existing
+// #household-switcher element by id and only touches its own innerHTML,
+// so it's safe (and necessary) to keep this live every call.
 if(typeof renderHouseholdSwitcher === 'function') renderHouseholdSwitcher();
 }
 async function updateHouseholdName() {
