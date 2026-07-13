@@ -18966,13 +18966,6 @@ function v2TriggerSync() {
 if(_v2GuestMode||!_v2Session) return;
 syncEngine.schedule();
 }
-async function v2MigrateLocalToCloud() {
-dbg('[V2] Starting V1→V2 migration…');
-stampAllItems();
-await syncEngine.run('full');
-setSyncMeta({ lastFullSync: new Date().toISOString() });
-toast('✓ Local data migrated to your cloud account!');
-}
 async function v2Boot() {
 function _applyGuestUI() {
 var si = document.getElementById('sync-indicator');
@@ -29682,46 +29675,36 @@ if(migrationEngine._locked) { disableScrollLock(); migrationEngine._locked = fal
 var ov = document.getElementById('migration-status');
 if(ov) ov.classList.remove('open');
 },
-_upsertItem: async function(sb, hhId, dbTable, item, retries) {
-retries = retries || 0;
-var now = new Date().toISOString();
-var row = {
-id:           item.id,
-household_id: hhId,
-table_name:   dbTable,
-payload:      item,
-updated_at:   item._updated_at || now,
-deleted:      !!item._deleted
-};
-try {
-var existing = await sb.from('sync_items')
-.select('id, updated_at')
-.eq('id', item.id)
+_fetchExistingMap: async function(sb, hhId) {
+var map = {};
+var pageSize = 1000;
+var from = 0;
+while(true) {
+var r = await sb.from('sync_items')
+.select('id, table_name, updated_at')
 .eq('household_id', hhId)
-.eq('table_name', dbTable)
-.maybeSingle();
-if(existing.data) {
-var cloudAt = existing.data.updated_at || '1970-01-01T00:00:00Z';
-var localAt = item._updated_at         || '1970-01-01T00:00:00Z';
-if(cloudAt > localAt) {
-item._cloud_id = existing.data.id;
-dbg('[MIG] Duplicate resolved (cloud newer): '+dbTable+'/'+item.id);
-return { skipped: true };
-}
-row.updated_at = localAt;
-}
-var r = await sb.from('sync_items').upsert(row, {onConflict:'id,household_id,table_name'});
+.range(from, from + pageSize - 1);
 if(r.error) throw r.error;
-item._cloud_id    = item.id;
-item._updated_at  = row.updated_at;
+var rows = r.data || [];
+rows.forEach(function(row){ map[row.table_name+'::'+row.id] = row.updated_at; });
+if(rows.length < pageSize) break;
+from += pageSize;
+}
+return map;
+},
+_upsertBatch: async function(sb, rows, retries) {
+retries = retries || 0;
+try {
+var r = await sb.from('sync_items').upsert(rows, {onConflict:'id,household_id,table_name'});
+if(r.error) throw r.error;
 return { success: true };
 } catch(e) {
 if(retries < 3) {
 var delay = Math.pow(2, retries) * 400; // 400ms, 800ms, 1600ms
 await new Promise(function(res){ setTimeout(res, delay); });
-return migrationEngine._upsertItem(sb, hhId, dbTable, item, retries+1);
+return migrationEngine._upsertBatch(sb, rows, retries+1);
 }
-dbg('[MIG] upsert failed after 3 retries: '+dbTable+'/'+item.id+' — '+e.message);
+dbg('[MIG] batch upsert failed after 3 retries ('+rows.length+' rows): '+e.message);
 return { error: e.message };
 }
 },
@@ -29756,16 +29739,62 @@ var done    = 0;
 var errors  = 0;
 var skipped = 0;
 dbg('[MIG] Uploading '+total+' items to household '+hhId);
-for(var i=0; i<tasks.length; i++) {
-var task = tasks[i];
+
+migrationEngine._showStatus('Checking what\u2019s already synced\u2026', 5);
+var existingMap;
+try {
+existingMap = await migrationEngine._fetchExistingMap(sb, hhId);
+} catch(e) {
+dbg('[MIG] existing-map fetch failed, falling back to upload-all: '+e.message);
+existingMap = {};
+}
+
+var nowIso = new Date().toISOString();
+var toUpload = [];
+tasks.forEach(function(task) {
+var item = task.item;
+var cloudAt = existingMap[task.tbl+'::'+item.id];
+var localAt = item._updated_at || nowIso;
+if(cloudAt && cloudAt > localAt) {
+item._cloud_id = item.id;
+skipped++;
+dbg('[MIG] Duplicate resolved (cloud newer): '+task.tbl+'/'+item.id);
+return;
+}
+toUpload.push({
+task: task,
+row: {
+id:           item.id,
+household_id: hhId,
+table_name:   task.tbl,
+payload:      item,
+updated_at:   localAt,
+deleted:      !!item._deleted
+}
+});
+});
+
+var CHUNK_SIZE = 250;
+var chunks = [];
+for(var c=0; c<toUpload.length; c+=CHUNK_SIZE) chunks.push(toUpload.slice(c, c+CHUNK_SIZE));
+
+for(var ci=0; ci<chunks.length; ci++) {
+var chunk = chunks[ci];
 migrationEngine._showStatus(
-'Uploading '+(task.tbl.replace('_',' '))+'\u2026 ('+Math.min(i+1, total)+' of '+total+')',
-Math.round((i+1)/total*90)
+'Uploading your data\u2026 (batch '+(ci+1)+' of '+Math.max(chunks.length,1)+')',
+5 + Math.round((ci+1)/Math.max(chunks.length,1)*85)
 );
-var result = await migrationEngine._upsertItem(sb, hhId, task.tbl, task.item);
-if(result.success)  done++;
-else if(result.skipped) skipped++;
-else { errors++; dbg('[MIG] item error: '+task.tbl+'/'+task.item.id); }
+var result = await migrationEngine._upsertBatch(sb, chunk.map(function(x){ return x.row; }));
+if(result.success) {
+chunk.forEach(function(x) {
+x.task.item._cloud_id   = x.task.item.id;
+x.task.item._updated_at = x.row.updated_at;
+});
+done += chunk.length;
+} else {
+errors += chunk.length;
+dbg('[MIG] batch '+(ci+1)+' failed ('+chunk.length+' items): '+result.error);
+}
 }
 _lsSaveV1();
 migrationEngine._showStatus('Verifying\u2026', 95);
