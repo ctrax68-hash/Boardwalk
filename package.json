@@ -1,0 +1,12 @@
+{
+  "name": "boardwalk",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Boardwalk personal finance PWA",
+  "scripts": {
+    "test": "node tests/run-all.js"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

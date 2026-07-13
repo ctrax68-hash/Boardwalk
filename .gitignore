@@ -14,3 +14,6 @@ Thumbs.db
 # Local env
 .env
 .env.local
+
+# Node / test deps
+node_modules/

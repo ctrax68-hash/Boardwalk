@@ -38,6 +38,21 @@ No build required. Just open `index.html` in a browser.
 npx serve .
 ```
 
+## Testing
+
+A Playwright-based smoke-test suite covers the flows most likely to
+silently break: Plaid bank linking/sync/unlink and the privacy lock
+screen.
+
+```bash
+npm install
+npm test
+```
+
+See `.claude/skills/verify/SKILL.md` for how to drive the app manually
+(local server + headless Chromium recipe, boot-timing notes) when
+adding new test coverage.
+
 ## iOS Notes
 
 - Add to Home Screen for full-screen PWA experience
