@@ -714,6 +714,14 @@ _normMemo = {};
 if(typeof invalidateHeatmapCache === 'function') invalidateHeatmapCache();
 if(typeof _recurDetectCache !== 'undefined') _recurDetectCache = null;
 if(typeof _cpIndex !== 'undefined') _cpIndex = null;
+// This and invalidateAllCaches() grew independently and used to clear
+// different, overlapping subsets of the app's caches — meaning which
+// caches actually got cleared depended on which of the two names a call
+// site happened to use. That gap is exactly the shape of bug that let a
+// data correction (see repairMisclassifiedPlaidPayments) show as fixed
+// in some render paths and stale in others. Delegate so both names are
+// now guaranteed equivalent and comprehensive.
+if(typeof invalidateAllCaches === 'function') invalidateAllCaches();
 dbg('[DBG] All caches invalidated');
 }
 var CACHE_TTL = {
@@ -1556,7 +1564,12 @@ _anCache = {};
 _recurDetectCache = null;
 _heatCtxCache = null;
 if(typeof _cpIndex !== 'undefined') _cpIndex = null;
-invalidateMonthSummCache();
+// Full wipe, not just the msumm_ subset: _ttlCache also holds dozens of
+// independently-cached v3_* insight values (cashflow, risk, wealth,
+// trajectory, etc.) with their own 10-30min TTLs, none of which were
+// being cleared here before — only a direct cacheInvalidateAll() call
+// reached them. Now both names clear everything.
+if(typeof _ttlCache !== 'undefined') _ttlCache = {};
 invalidateHeatmapCache();
 }
 var _lsQuotaWarned = false;
@@ -15472,14 +15485,19 @@ setTimeout(function(){dot.remove();},1600);
 var _dashCache = null; // { key, snap, bills, goals, alerts, insights, ts }
 var _insightIdx = 0;
 var _insightTimer = null;
+// Deliberately does NOT consult getMonthSummary's cache here, even though
+// it computes the same numbers — these two take a live txs array as their
+// actual source of truth, and trusting a cached summary over it let a
+// data correction (transactions reclassified in place, same array length)
+// render as fixed in some places and stale in others depending on whether
+// that cache had already been populated. getMonthSummary's cache is fine
+// to use directly (see other call sites) since it's invalidated
+// explicitly wherever transactions change; these two just shouldn't
+// silently override a fresh parameter with a possibly-stale one.
 function computeMonthlyIncome(txs) {
-var summ = getMonthSummary(cY, cM);
-if(summ) return summ.inc;
 return getIncome ? getIncome(txs) : txs.filter(function(t){return t.type==='income';}).reduce(function(s,t){return s+t.amount;},0);
 }
 function computeMonthlyExpenses(txs) {
-var summ = getMonthSummary(cY, cM);
-if(summ) return summ.exp;
 return txs.filter(function(t){return t.type==='expense';}).reduce(function(s,t){return s+t.amount;},0);
 }
 function computeNetPosition(inc, exp) { return inc - exp; }
