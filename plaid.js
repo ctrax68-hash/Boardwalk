@@ -198,12 +198,21 @@ if(top==='food and drink')       return 'Food & Dining';
 if(top==='shops')                return sub==='groceries' ? 'Food & Dining' : 'Shopping';
 if(top==='travel' && sub==='gas stations') return 'Auto & Gas';
 if(top==='travel')               return 'Transport';
-if(top==='payment')              return 'Housing';
+// Plaid's "Payment" category covers credit card/loan payments, never
+// housing spend — mapping it to 'Housing' mislabeled every card payment
+// as a housing expense. type is what actually excludes these from
+// spending totals (see _normalizePlaidTx below); category here is just
+// cosmetic, so 'Other' is a safe, always-defined fallback.
+if(top==='payment')              return 'Other';
 if(top==='recreation')           return 'Entertainment';
 if(top==='healthcare')           return 'Health & Fitness';
 if(top==='service')              return 'Subscriptions';
 if(top==='transfer')             return 'Investments & Tax Accruals';
 return 'Other';
+}
+function _isPlaidCategoryPayment(plaidCats) {
+if(!plaidCats || !plaidCats.length) return false;
+return (plaidCats[0]||'').toLowerCase() === 'payment';
 }
 function _normalizePlaidTx(plaidTxs, acctTypeById) {
 acctTypeById = acctTypeById || {};
@@ -219,6 +228,13 @@ var isCredit = acctTypeById[ptx.account_id] === 'credit';
 var txType = isCredit
 ? (ptx.amount > 0 ? 'expense' : 'payment')
 : (ptx.amount > 0 ? 'expense' : 'income');
+// The sign+account-type heuristic above is not reliable enough on its
+// own — a real credit card "Payment Thank You" transaction came through
+// sign-classified as 'expense' and got counted as new household
+// spending. Plaid's own category is a stronger, independent signal for
+// "this is a balance payment, not a purchase" — let it win when the two
+// disagree, on a credit account.
+if(isCredit && _isPlaidCategoryPayment(ptx.category)) txType = 'payment';
 return normalizeTransactionShape({
 id:          'plaid_' + ptx.transaction_id,
 type:        txType,

@@ -1341,6 +1341,43 @@ done();
 }
 function saveTxToDB(tx){dbPut('transactions',tx);lsSave();if(typeof autoMatchTxToBills==='function')setTimeout(function(){autoMatchTxToBills(tx);},0);}
 function delTxFromDB(id){dbDel('transactions',id);lsSave();}
+// One-time repair for transactions already ingested before the Plaid
+// "Payment"-category fix (see _normalizePlaidTx/_mapPlaidCategory in
+// plaid.js): those were sign-classified as type:'expense' and mapped to
+// category:'Housing', so they got counted as real household spending
+// instead of being excluded as a credit card balance payment. Plaid won't
+// resend an unchanged transaction, so a normal sync never corrects
+// already-stored bad records on its own — this scans local data once and
+// reclassifies the specific pattern this bug produced. Narrowly scoped to
+// known card-payment phrasing (not a bare "payment" match) so a real
+// housing expense that happens to mention "payment" is never touched.
+var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v1';
+var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
+function repairMisclassifiedPlaidPayments() {
+try {
+if(safeGet(PLAID_PAYMENT_REPAIR_KEY, '') === '1') return 0;
+var fixed = 0;
+(AppState.transactions||[]).forEach(function(t) {
+if(!t || typeof t.id !== 'string' || t.id.indexOf('plaid_') !== 0) return;
+if(t.type !== 'expense' || t.category !== 'Housing') return;
+var name = t.merchantRaw || t.merchant || t.merchantNorm || '';
+if(!_PLAID_PAYMENT_NAME_RE.test(name)) return;
+t.type = 'payment';
+t.category = 'Other';
+t._updated_at = new Date().toISOString();
+saveTxToDB(t);
+fixed++;
+});
+safeSet(PLAID_PAYMENT_REPAIR_KEY, '1');
+if(fixed > 0) {
+invalidateAllCaches();
+renderAll();
+if(typeof v2TriggerSync === 'function') v2TriggerSync();
+dbg('[repair] reclassified '+fixed+' miscategorized Plaid card-payment transaction(s)');
+}
+return fixed;
+} catch(e) { dbg('[repair] error: '+e.message); return 0; }
+}
 function saveGoalToDB(g){dbPut('goals',g);lsSave();try{if(typeof GoalStore!=='undefined')GoalStore.refreshGoals(AppState.goals||[]);}catch(e){}try{if(typeof GoalsShell!=='undefined')GoalsShell.refresh();}catch(e){}}
 function delGoalFromDB(id){dbDel('goals',id);lsSave();}
 var STARTER_KEY    = 'kevt_hasImportedBudget'; // true = user has real data
@@ -46539,6 +46576,7 @@ __obLog('[7] resumeOAuthIfNeeded() returned');
 __obLog('[6-ALT] resumeOAuthIfNeeded is NOT a function: ' + typeof (PlaidLinkManager && PlaidLinkManager.resumeOAuthIfNeeded));
 }
 try { if(typeof PlaidLinkManager.checkPendingHostedLink === 'function') PlaidLinkManager.checkPendingHostedLink(); } catch(e) { dbg('[Plaid] checkPendingHostedLink boot error: '+e.message); }
+try { repairMisclassifiedPlaidPayments(); } catch(e) { dbg('[repair] boot error: '+e.message); }
 autoSyncOnLoad();
 __obLog('[8] autoSyncOnLoad() done');
 checkShowTutorial();
