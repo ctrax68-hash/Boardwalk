@@ -3104,9 +3104,17 @@ function setT(t){
 fT=t;
 document.getElementById('bexp').className='ttbtn'+(t==='expense'?' ae':'');
 document.getElementById('binc').className='ttbtn'+(t==='income'?' ai':'');
+var bpay=document.getElementById('bpay');
+if(bpay) bpay.className='ttbtn'+(t==='payment'?' ap':'');
 var sel=document.getElementById('fcat');var prev=sel.value;
-sel.innerHTML=CATS[t].map(function(c){return'<option>'+c+'</option>';}).join('');
-if(CATS[t].indexOf(prev)!==-1)sel.value=prev;
+// 'payment' (a credit card/loan payment, excluded from spending totals —
+// see normalizeTransactionShape) has no dedicated category list; category
+// is cosmetic for it, so reuse the expense list rather than crash on
+// CATS['payment'] being undefined (hit when editing an existing
+// payment-type transaction, since fT is seeded from tx.type).
+var catList = CATS[t] || CATS.expense;
+sel.innerHTML=catList.map(function(c){return'<option>'+c+'</option>';}).join('');
+if(catList.indexOf(prev)!==-1)sel.value=prev;
 }
 function autoCat(){
 var mer=document.getElementById('fmer').value;

@@ -1068,6 +1068,11 @@ background: rgba(101,170,225,0.14) !important;
 border-color: rgba(101,170,225,0.35) !important;
 color: #65AAE1 !important;
 }
+body.dim.app-loaded .ttbtn.ap {
+background: rgba(126,200,227,0.14) !important;
+border-color: rgba(126,200,227,0.35) !important;
+color: #7EC8E3 !important;
+}
 body.dim.app-loaded .bsc-qf-btn,
 body.dim.app-loaded .gqf-btn {
 background: rgba(255,255,255,0.05) !important;
@@ -2083,10 +2088,11 @@ justify-content:center;
 touch-action:manipulation;
 }
 .mcls:active{background:var(--border);transform:scale(.90);}
-.ttog{display:grid;grid-template-columns:1fr 1fr;gap:var(--sm);margin-bottom:var(--md);}
+.ttog{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--sm);margin-bottom:var(--md);}
 .ttbtn{padding:11px;border-radius:13px;border:2px solid var(--border);background:var(--card);font-weight:700;font-size:var(--fs-subtext);cursor:pointer;font-family:inherit;transition:all .16s;}
 .ttbtn.ae{border-color:var(--red);background:var(--redbg);color:var(--red);}
 .ttbtn.ai{border-color:var(--em);background:var(--embg);color:var(--em);}
+.ttbtn.ap{border-color:#7EC8E3;background:rgba(126,200,227,.18);color:#003049;}
 .flbl{font-size:12px;font-weight:600;color:var(--sub);letter-spacing:.03em;text-transform:uppercase;display:block;margin-bottom:8px;margin-top:0;}
 .fin{
 width:100%;
