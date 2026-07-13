@@ -1,7 +1,7 @@
 // Boardwalk service worker — app-shell offline cache + Web Push notifications.
 // Bump CACHE_VERSION on any deploy that should force-evict old cached shell files.
-var CACHE_VERSION = 'boardwalk-v1';
-var APP_SHELL = ['./', './index.html', './app.js', './styles.css', './manifest.json'];
+var CACHE_VERSION = 'boardwalk-v2';
+var APP_SHELL = ['./', './index.html', './app.js', './plaid.js', './styles.css', './manifest.json'];
 
 self.addEventListener('install', function(event) {
 self.skipWaiting();
