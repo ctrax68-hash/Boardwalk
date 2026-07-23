@@ -29802,6 +29802,7 @@ return;
 }
 migrationEngine._showStatus('Preparing your data\u2026', 2);
 safeSet(V2_MIGRATION_STATUS_KEY, 'partial');
+try {
 stampAllItems();
 var tasks = [];
 (AppState.transactions||[]).forEach(function(t){ tasks.push({item:t, tbl:'transactions'}); });
@@ -29895,7 +29896,6 @@ _normMemo = {};
 _recurDetectCache = null;
 if(typeof invalidateHeatmapCache === 'function') invalidateHeatmapCache();
 } catch(e) { dbg('[MIG] post-sync error: '+e.message); }
-migrationEngine._hideStatus();
 renderAll();
 if(errors === 0) {
 toast('\u2713 Your data is now synced across devices!');
@@ -29903,6 +29903,19 @@ dbg('[MIG] Migration complete: '+summary);
 } else {
 toast('\u26A0 Migration partially complete \u2014 tap Settings to retry.');
 dbg('[MIG] Partial migration: '+errors+' items failed');
+}
+} catch(runErr) {
+// If ANYTHING above throws (localStorage quota, a bad payload, etc.),
+// this async function would otherwise reject silently (run() is invoked
+// via .catch(dbg) in authSignIn, never awaited by the UI) \u2014 leaving the
+// full-screen #migration-status overlay (no close button, blocks all
+// input) stuck open forever. The finally below guarantees it always
+// closes; this catch just makes the failure visible and non-fatal.
+dbg('[MIG] run() fatal error: '+runErr.message);
+safeSet(V2_MIGRATION_STATUS_KEY, 'partial');
+toast('\u26A0 Setup hit a snag \u2014 tap Settings to retry.');
+} finally {
+migrationEngine._hideStatus();
 }
 },
 _verify: async function(sb, hhId) {

@@ -139,6 +139,52 @@ async function run(baseUrl) {
       };
     });
     check('🔍 A transient batch failure retries (2 attempts: 1 fail + 1 success) rather than dropping the chunk', retryResult.upsertAttempts === 2 && retryResult.migrationDone === '1' && retryResult.cloudId === 'retry_tx_1', retryResult);
+
+    // 🔍 Root-cause regression check ("buttons went dead / can't log in"):
+    // migrationEngine.run() is fire-and-forget from authSignIn() (only
+    // .catch(dbg), never awaited by the UI). Before the fix, any unexpected
+    // throw partway through run() — after _showStatus() opened the
+    // full-screen #migration-status overlay and called enableScrollLock()
+    // — skipped straight past the _hideStatus() call at the end, leaving
+    // that overlay (z-index 10500, no close button) stuck open forever,
+    // blocking every click in the app including the login form behind it.
+    // Simulate an unexpected hard throw (not a normal {error} response
+    // shape) from the existing-rows fetch and confirm the overlay and
+    // scroll lock always release.
+    const crashResult = await page.evaluate(async () => {
+      window._v2Session = { access_token: 'fake' };
+      window._v2Household = { id: 'hh_mig_test3' };
+      authState.status = 'authenticated';
+      AppState.transactions = [{ id: 'crash_tx_1', amount: 5, date: '2026-01-01', type: 'expense', category: 'Other', _updated_at: '2026-07-01T00:00:00.000Z', _deleted: false }];
+      AppState.goals = []; AppState.recurRules = []; AppState.budgets = {};
+      try { localStorage.removeItem('kevt_v2_migration_done'); } catch (e) {}
+
+      // Force a hard throw deep inside run(), after _showStatus() has
+      // already opened the overlay — simulates the class of bug (bad
+      // response shape, quota error, etc.) that used to strand it open.
+      var modalCountBefore = window._modalOpenCount;
+      var origLsSaveV1 = window._lsSaveV1;
+      window._lsSaveV1 = function () { throw new Error('simulated unexpected crash mid-migration'); };
+
+      var threw = false;
+      try {
+        await migrationEngine.run();
+      } catch (e) {
+        threw = true;
+      }
+      window._lsSaveV1 = origLsSaveV1;
+
+      var ov = document.getElementById('migration-status');
+      return {
+        threw: threw,
+        overlayStillOpen: ov ? ov.classList.contains('open') : null,
+        modalCountBefore: modalCountBefore,
+        modalCountAfter: window._modalOpenCount,
+      };
+    });
+    check('run() does not let an internal throw escape as an unhandled rejection', crashResult.threw === false, crashResult);
+    check('🔍 The full-screen migration overlay is NOT left stuck open after an internal crash', crashResult.overlayStillOpen === false, crashResult);
+    check('🔍 Scroll lock is released (net modal-open count unchanged) after an internal crash, not left stuck blocking the whole app', crashResult.modalCountAfter === crashResult.modalCountBefore, crashResult);
   } finally {
     await browser.close();
   }
