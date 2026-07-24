@@ -19777,7 +19777,7 @@ function apGetSimulation() {
   };
   // Goals projection
   var gStore = (typeof GoalStore !== 'undefined') ? GoalStore : null;
-  var goalTotal = gStore ? (gStore.getAll() || []).reduce(function(s,g){ return s + (g.target||0); }, 0) : 0;
+  var goalTotal = gStore ? (gStore.getGoals() || []).reduce(function(s,g){ return s + (g.target||0); }, 0) : 0;
   var goals = {
     label:  'Goals',
     values: Array.from({length:14}, function(_,i){ return goalTotal * (i+1) / 14; }),
