@@ -19666,6 +19666,7 @@ function apGetInsights() {
   (_aiInsightsCache || []).slice(0,5).forEach(function(row) {
     var ins = (row.insights || []);
     if(typeof ins === 'string') { try { ins = JSON.parse(ins); } catch(e){ ins = []; } }
+    if(!Array.isArray(ins)) ins = [];
     ins.slice(0,3).forEach(function(i) {
       list.push({
         title:           i.title || i.message || 'Insight',
