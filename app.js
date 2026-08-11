@@ -16356,7 +16356,7 @@ if(overdueCount>0) insights.push(overdueCount+' bill'+(overdueCount>1?'s':'')+(o
 var net = anMonthInc(txs) - thisExp;
 if(net<0) insights.push('You\'re over budget by '+fmt(Math.abs(net))+' this month.');
 else if(net>0 && txs.length>3) insights.push('On track to save '+fmt(net)+' this month. &#127775;');
-if(!insights.length) { var _emptyInsEl = document.getElementById('an-insight-panel'); if(_emptyInsEl) _emptyInsEl.innerHTML = renderBillsEmptyInsights(); return; }
+if(!insights.length) { var _emptyInsEl = document.getElementById('an-insight-panel'); if(_emptyInsEl) _emptyInsEl.innerHTML = renderBillsEmptyInsights(); return insights; }
 return insights;
 }
 function anStartInsightRotator(insights, el) {
