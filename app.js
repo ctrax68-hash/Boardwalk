@@ -1359,7 +1359,7 @@ function delTxFromDB(id){dbDel('transactions',id);lsSave();}
 // reclassifies the specific pattern this bug produced. Narrowly scoped to
 // known card-payment phrasing (not a bare "payment" match) so a real
 // housing expense that happens to mention "payment" is never touched.
-var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v6';
+var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v7';
 var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
 // Same idea as a card payment: money moving between the household's own
 // linked accounts (e.g. checking <-> savings) isn't real income or
@@ -1388,7 +1388,17 @@ return false;
 }
 function repairMisclassifiedPlaidPayments() {
 try {
-if(safeGet(PLAID_PAYMENT_REPAIR_KEY, '') === '1') return 0;
+// v7: dropped the permanent "only ever run once" gate. This household's
+// production data proved it out — the repair ran once, flagged itself
+// done, and then months of older Plaid history kept arriving locally in
+// later /transactions/sync batches (the backlog only finished loading
+// after the separate autoSyncOnLoad() crash was fixed). Every one of
+// those already-bad older transactions loaded AFTER the flag was set
+// silently skipped the scan forever and got pushed to the cloud with
+// its original bad classification on the household's first successful
+// push. Re-scanning on every boot is cheap (already-fixed rows fail the
+// type check immediately below and return before any regex work) and
+// closes this class of bug for good.
 var fixed = 0;
 (AppState.transactions||[]).forEach(function(t) {
 if(!t || typeof t.id !== 'string' || t.id.indexOf('plaid_') !== 0) return;

@@ -134,7 +134,7 @@ async function run(baseUrl) {
     // One-time repair: existing bad records (saved before this fix, with
     // the bug's exact output shape) should get corrected in place.
     const repairResult = await page.evaluate(() => {
-      localStorage.removeItem('kevt_plaid_payment_repair_done_v6');
+      localStorage.removeItem('kevt_plaid_payment_repair_done_v7');
       AppState.transactions = [
         { id: 'plaid_bad1', type: 'expense', category: 'Housing', amount: 2000, date: '2026-07-07', merchantRaw: 'Payment Thank You-Mobile', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
         { id: 'plaid_bad2', type: 'expense', category: 'Housing', amount: 1900, date: '2026-07-07', merchantRaw: 'PAYMENT THANK YOU - WEB', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
@@ -188,7 +188,7 @@ async function run(baseUrl) {
         realRent: { type: byId.plaid_real_rent.type, category: byId.plaid_real_rent.category },
         manual: { type: byId.manual_1.type, category: byId.manual_1.category },
         utility: { type: byId.plaid_utility.type, category: byId.plaid_utility.category },
-        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v6'),
+        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v7'),
       };
     });
     check('Repair fixes exactly the 8 miscategorized Plaid transactions', repairResult.fixedCount === 8, repairResult.fixedCount);
@@ -206,9 +206,26 @@ async function run(baseUrl) {
     check('🔍 Real ACH-paid utility bill is NOT touched (has DES:EPAY but not a credit card)', repairResult.utility.type === 'expense' && repairResult.utility.category === 'Other', repairResult.utility);
     check('Repair flag set after running', repairResult.repairFlag === '1', repairResult.repairFlag);
 
-    // 🔍 Probe: running it again should be a no-op (flag gates re-processing).
+    // 🔍 v7: the repair no longer gates itself off after one run — it
+    // re-scans every boot so historical Plaid batches that arrive later
+    // still get caught. Confirm running it again is a no-op because
+    // there's genuinely nothing left to fix, not because a flag skipped it.
     const secondRunResult = await page.evaluate(() => repairMisclassifiedPlaidPayments());
-    check('🔍 Re-running the repair is a no-op (flag already set)', secondRunResult === 0, secondRunResult);
+    check('🔍 Re-running the repair is a no-op (everything already fixed, not flag-gated)', secondRunResult === 0, secondRunResult);
+
+    // 🔍 Regression: the exact production bug. A later /transactions/sync
+    // batch backfills an older, still-misclassified Plaid transaction into
+    // AppState.transactions AFTER the repair flag is already '1' (simulating
+    // historical data that only finished loading after the flag was set on
+    // an earlier, smaller dataset). Under the old one-time gate this was
+    // silently skipped forever and got pushed to the cloud still wrong.
+    const lateArrivalResult = await page.evaluate(() => {
+      AppState.transactions.push({ id: 'plaid_late_arrival', type: 'expense', category: 'Other', amount: 2400, date: '2025-08-07', merchantRaw: 'Payment Thank You-Mobile', _updated_at: '2025-08-07T00:00:00.000Z', _deleted: false });
+      var fixedCount = repairMisclassifiedPlaidPayments();
+      var t = AppState.transactions.find(function (x) { return x.id === 'plaid_late_arrival'; });
+      return { fixedCount: fixedCount, type: t.type, category: t.category };
+    });
+    check('🔍 A misclassified transaction that arrives after the repair flag was already set still gets fixed', lateArrivalResult.fixedCount === 1 && lateArrivalResult.type === 'payment' && lateArrivalResult.category === 'Other', lateArrivalResult);
   } finally {
     await browser.close();
   }

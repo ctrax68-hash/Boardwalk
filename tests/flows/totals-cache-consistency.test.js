@@ -64,7 +64,7 @@ async function run(baseUrl) {
     // runs, computeMonthlyExpenses on the same month should reflect the
     // correction even though a stale msumm_ cache entry still exists.
     const e2eResult = await page.evaluate(() => {
-      localStorage.removeItem('kevt_plaid_payment_repair_done_v6');
+      localStorage.removeItem('kevt_plaid_payment_repair_done_v7');
       AppState.transactions = [
         { id: 'plaid_e2e_1', type: 'expense', category: 'Housing', amount: 2000, date: '2026-07-07', mk: '2026-07', merchantRaw: 'Payment Thank You-Mobile', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
         { id: 'plaid_e2e_2', type: 'expense', category: 'Shopping', amount: 670.88, date: '2026-07-05', mk: '2026-07', merchantRaw: 'Amazon', _updated_at: '2026-07-05T00:00:00.000Z', _deleted: false },
