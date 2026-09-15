@@ -261,6 +261,13 @@ if(/CREDIT\s*(?:CRD|CARD)/.test(n) && /E-?PAY|AUTO\s*-?\s*PAY/.test(n)) return t
 // WEB" — "CC" abbreviating "Credit Card" right before "PYMT"/"PMT" is
 // unambiguous ACH shorthand, unlikely to appear in any non-card context.
 if(/\bCC\s*(?:PYMT|PMT|PAYMENT)\b/.test(n)) return true;
+// Bank of America's own descriptor style: "PAYMENT FROM SAV 1920
+// CONF#..." / "PAYMENT FROM CHK 8577 CONF#..." (the account paying the
+// card) and "Mobile Banking payment to CRD 4282 Confirmation#..." (the
+// card account being paid) — SAV/CHK/CRD abbreviating the account type is
+// specific enough to not collide with a real merchant name.
+if(/\bPAYMENT\s+(?:FROM|TO)\s+(?:SAV|CHK)\b/.test(n)) return true;
+if(/\bPAYMENT\s+TO\s+CRD\b/.test(n)) return true;
 return false;
 }
 function _isPlaidPaymentTx(ptx) {

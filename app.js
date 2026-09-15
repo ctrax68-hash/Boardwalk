@@ -1359,7 +1359,7 @@ function delTxFromDB(id){dbDel('transactions',id);lsSave();}
 // reclassifies the specific pattern this bug produced. Narrowly scoped to
 // known card-payment phrasing (not a bare "payment" match) so a real
 // housing expense that happens to mention "payment" is never touched.
-var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v5';
+var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v6';
 var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
 // Same idea as a card payment: money moving between the household's own
 // linked accounts (e.g. checking <-> savings) isn't real income or
@@ -1380,6 +1380,10 @@ function _looksLikeCardPaymentDescriptor(name) {
 var n = (name || '').toUpperCase();
 if(/CREDIT\s*(?:CRD|CARD)/.test(n) && /E-?PAY|AUTO\s*-?\s*PAY/.test(n)) return true;
 if(/\bCC\s*(?:PYMT|PMT|PAYMENT)\b/.test(n)) return true;
+// Bank of America's own descriptor style: "PAYMENT FROM SAV 1920
+// CONF#..." / "Mobile Banking payment to CRD 4282 Confirmation#...".
+if(/\bPAYMENT\s+(?:FROM|TO)\s+(?:SAV|CHK)\b/.test(n)) return true;
+if(/\bPAYMENT\s+TO\s+CRD\b/.test(n)) return true;
 return false;
 }
 function repairMisclassifiedPlaidPayments() {
@@ -1393,13 +1397,17 @@ if(!t || typeof t.id !== 'string' || t.id.indexOf('plaid_') !== 0) return;
 // depository leg when it used the "Payment Thank You" wording. v3 added
 // the "CREDIT CRD ... EPAY" raw ACH descriptor pattern; v4 added the
 // "CC PYMT"/"CC PMT" shorthand variant seen from other originating banks.
-// v5 adds self-transfers between the household's own accounts — unlike a
-// card payment, a transfer shows up as type:'income' on one side (money
-// arriving from the other account) as well as type:'expense', so both
-// need checking here.
+// v5 adds self-transfers between the household's own accounts. v6 adds
+// Bank of America's "PAYMENT FROM SAV/CHK ####" / "payment to CRD ####"
+// descriptor style, and drops the expense-only restriction on the card-
+// payment signal too — real data showed this style landing as
+// type:'income' on the account BofA didn't classify as 'credit' locally
+// (whichever side of the payment posted "money arriving"), the same
+// income/expense ambiguity a transfer has, not just an expense.
+if(t.type !== 'expense' && t.type !== 'income') return;
 var name = t.merchantRaw || t.merchant || t.merchantNorm || '';
-var isCardPayment = t.type === 'expense' && (_PLAID_PAYMENT_NAME_RE.test(name) || _looksLikeCardPaymentDescriptor(name));
-var isTransfer = (t.type === 'expense' || t.type === 'income') && _PLAID_TRANSFER_NAME_RE.test(name);
+var isCardPayment = _PLAID_PAYMENT_NAME_RE.test(name) || _looksLikeCardPaymentDescriptor(name);
+var isTransfer = _PLAID_TRANSFER_NAME_RE.test(name);
 if(!isCardPayment && !isTransfer) return;
 t.type = 'payment';
 t.category = 'Other';

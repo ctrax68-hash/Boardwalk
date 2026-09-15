@@ -61,6 +61,12 @@ async function run(baseUrl) {
               // shorthand for the same kind of payment — "CC PYMT" instead
               // of "CREDIT CRD ... EPAY".
               { transaction_id: 'ptx_cc_pymt', account_id: 'acc_checking_1', amount: 573, date: '2026-08-18', name: 'Synchrony Bank DES:CC PYMT ID:XXXXXXXXXX31688 INDN:COLE TRACHSEL CO ID:XXXXX94001 WEB', category: null, personal_finance_category: null, pending: false },
+              // Real-world case: Bank of America's own descriptor style —
+              // negative amount on an account not flagged 'credit' in
+              // acctTypeById lands this on the 'income' branch of the sign
+              // heuristic, exactly what was reported live.
+              { transaction_id: 'ptx_boa_from_sav', account_id: 'acc_checking_1', amount: -750, date: '2026-09-07', name: 'PAYMENT FROM SAV 1920 CONF#x1kjdww2v', category: null, personal_finance_category: null, pending: false },
+              { transaction_id: 'ptx_boa_to_crd', account_id: 'acc_checking_1', amount: 750, date: '2026-07-07', name: 'Mobile Banking payment to CRD 4282 Confirmation# 6y0mtryln', category: null, personal_finance_category: null, pending: false },
               // Self-transfer between the household's own accounts, via
               // Plaid's modern TRANSFER_IN taxonomy — money arriving from
               // the household's own savings account, sign-heuristic alone
@@ -98,6 +104,8 @@ async function run(baseUrl) {
         transferPfc: byId['plaid_ptx_transfer_pfc'] ? { type: byId['plaid_ptx_transfer_pfc'].type, category: byId['plaid_ptx_transfer_pfc'].category } : null,
         transferLegacy: byId['plaid_ptx_transfer_legacy'] ? { type: byId['plaid_ptx_transfer_legacy'].type, category: byId['plaid_ptx_transfer_legacy'].category } : null,
         wireOut: byId['plaid_ptx_wire_out'] ? { type: byId['plaid_ptx_wire_out'].type, category: byId['plaid_ptx_wire_out'].category } : null,
+        boaFromSav: byId['plaid_ptx_boa_from_sav'] ? { type: byId['plaid_ptx_boa_from_sav'].type, category: byId['plaid_ptx_boa_from_sav'].category } : null,
+        boaToCrd: byId['plaid_ptx_boa_to_crd'] ? { type: byId['plaid_ptx_boa_to_crd'].type, category: byId['plaid_ptx_boa_to_crd'].category } : null,
       };
     });
     check('Payment-category transaction with negative amount classifies as type:payment', classificationResult.neg && classificationResult.neg.type === 'payment', classificationResult.neg);
@@ -112,11 +120,13 @@ async function run(baseUrl) {
     check('🔍 A self-transfer via Plaid\'s TRANSFER_IN category is classified as type:payment, not income', classificationResult.transferPfc && classificationResult.transferPfc.type === 'payment' && classificationResult.transferPfc.category === 'Other', classificationResult.transferPfc);
     check('🔍 A self-transfer via the legacy \'Transfer\' category is classified as type:payment, not expense', classificationResult.transferLegacy && classificationResult.transferLegacy.type === 'payment' && classificationResult.transferLegacy.category === 'Other', classificationResult.transferLegacy);
     check('🔍 A wire transfer to someone else (not a self-transfer) stays real spending', classificationResult.wireOut && classificationResult.wireOut.type === 'expense', classificationResult.wireOut);
+    check('🔍 Bank of America "PAYMENT FROM SAV ####" is recognized as a card payment', classificationResult.boaFromSav && classificationResult.boaFromSav.type === 'payment', classificationResult.boaFromSav);
+    check('🔍 Bank of America "Mobile Banking payment to CRD ####" is recognized as a card payment', classificationResult.boaToCrd && classificationResult.boaToCrd.type === 'payment', classificationResult.boaToCrd);
 
     // One-time repair: existing bad records (saved before this fix, with
     // the bug's exact output shape) should get corrected in place.
     const repairResult = await page.evaluate(() => {
-      localStorage.removeItem('kevt_plaid_payment_repair_done_v5');
+      localStorage.removeItem('kevt_plaid_payment_repair_done_v6');
       AppState.transactions = [
         { id: 'plaid_bad1', type: 'expense', category: 'Housing', amount: 2000, date: '2026-07-07', merchantRaw: 'Payment Thank You-Mobile', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
         { id: 'plaid_bad2', type: 'expense', category: 'Housing', amount: 1900, date: '2026-07-07', merchantRaw: 'PAYMENT THANK YOU - WEB', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
@@ -147,6 +157,11 @@ async function run(baseUrl) {
         { id: 'plaid_xfer_out', type: 'expense', category: 'Investments & Tax Accruals', amount: 2000, date: '2026-07-09', merchantRaw: 'Online Banking transfer to SAV 1920 Confirmation# XXXXX96432', _updated_at: '2026-07-09T00:00:00.000Z', _deleted: false },
         // Should NOT be touched: real payroll deposit, not a self-transfer.
         { id: 'plaid_paycheck', type: 'income', category: 'Income', amount: 2169.67, date: '2026-08-28', merchantRaw: 'PROTIVITI INC. DES:EARNINGS ID:XXXXX8672205 INDN:COLE TRACHSEL', _updated_at: '2026-08-28T00:00:00.000Z', _deleted: false },
+        // 🔍 The exact live transaction that prompted v6: Bank of America's
+        // "PAYMENT FROM SAV ####" descriptor, sitting as type:'income'
+        // (not 'expense' — the old repair's expense-only gate would have
+        // skipped this even if the name pattern had existed back then).
+        { id: 'plaid_bad6', type: 'income', category: 'Other', amount: 750, date: '2026-09-07', merchantRaw: 'PAYMENT FROM SAV 1920 CONF#x1kjdww2v', _updated_at: '2026-09-07T00:00:00.000Z', _deleted: false },
       ];
       var fixedCount = repairMisclassifiedPlaidPayments();
       var byId = {};
@@ -161,13 +176,14 @@ async function run(baseUrl) {
         xferIn: { type: byId.plaid_xfer_in.type, category: byId.plaid_xfer_in.category },
         xferOut: { type: byId.plaid_xfer_out.type, category: byId.plaid_xfer_out.category },
         paycheck: { type: byId.plaid_paycheck.type, category: byId.plaid_paycheck.category },
+        bad6: { type: byId.plaid_bad6.type, category: byId.plaid_bad6.category },
         realRent: { type: byId.plaid_real_rent.type, category: byId.plaid_real_rent.category },
         manual: { type: byId.manual_1.type, category: byId.manual_1.category },
         utility: { type: byId.plaid_utility.type, category: byId.plaid_utility.category },
-        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v5'),
+        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v6'),
       };
     });
-    check('Repair fixes exactly the 7 miscategorized Plaid transactions', repairResult.fixedCount === 7, repairResult.fixedCount);
+    check('Repair fixes exactly the 8 miscategorized Plaid transactions', repairResult.fixedCount === 8, repairResult.fixedCount);
     check('Bad transaction 1 reclassified to type:payment, category:Other', repairResult.bad1.type === 'payment' && repairResult.bad1.category === 'Other', repairResult.bad1);
     check('Bad transaction 2 reclassified to type:payment, category:Other', repairResult.bad2.type === 'payment' && repairResult.bad2.category === 'Other', repairResult.bad2);
     check('🔍 Bad transaction 3 (depository leg, "Payment Thank You" wording, category was already Other) is fixed', repairResult.bad3.type === 'payment' && repairResult.bad3.category === 'Other', repairResult.bad3);
@@ -176,6 +192,7 @@ async function run(baseUrl) {
     check('🔍 Incoming self-transfer (type was income) reclassified to type:payment, category:Other by v5', repairResult.xferIn.type === 'payment' && repairResult.xferIn.category === 'Other', repairResult.xferIn);
     check('🔍 Outgoing self-transfer (type was expense) reclassified to type:payment, category:Other by v5', repairResult.xferOut.type === 'payment' && repairResult.xferOut.category === 'Other', repairResult.xferOut);
     check('🔍 A real payroll deposit is NOT touched (false-positive guard on the income side)', repairResult.paycheck.type === 'income' && repairResult.paycheck.category === 'Income', repairResult.paycheck);
+    check('🔍 Bad transaction 6 (live case: BofA "PAYMENT FROM SAV" sitting as type:income) is fixed by v6', repairResult.bad6.type === 'payment' && repairResult.bad6.category === 'Other', repairResult.bad6);
     check('🔍 Real Plaid-sourced rent expense is NOT touched (false-positive guard)', repairResult.realRent.type === 'expense' && repairResult.realRent.category === 'Housing', repairResult.realRent);
     check('🔍 Non-Plaid (manual) transaction is NOT touched even with matching name', repairResult.manual.type === 'expense' && repairResult.manual.category === 'Housing', repairResult.manual);
     check('🔍 Real ACH-paid utility bill is NOT touched (has DES:EPAY but not a credit card)', repairResult.utility.type === 'expense' && repairResult.utility.category === 'Other', repairResult.utility);
