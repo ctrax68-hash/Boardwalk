@@ -207,13 +207,35 @@ if(top==='payment')              return 'Other';
 if(top==='recreation')           return 'Entertainment';
 if(top==='healthcare')           return 'Health & Fitness';
 if(top==='service')              return 'Subscriptions';
-if(top==='transfer')             return 'Investments & Tax Accruals';
+// A self-transfer between the household's own accounts (see
+// _isPlaidTransferCategory below) is excluded from totals via type, same
+// as a card payment — 'Investments & Tax Accruals' implied something
+// about the money that usually wasn't true for a plain checking<->savings
+// move, so this is 'Other' for the same reason 'payment' is.
+if(top==='transfer')             return 'Other';
 return 'Other';
 }
 function _isPlaidCategoryPayment(plaidCats) {
 if(!plaidCats || !plaidCats.length) return false;
 return (plaidCats[0]||'').toLowerCase() === 'payment';
 }
+// Plaid's TRANSFER_IN/TRANSFER_OUT (modern taxonomy) and legacy 'Transfer'
+// top-level category both specifically mean a transfer between the user's
+// own accounts (as opposed to sending money to someone else) — the exact
+// "not real income/expense" case the household asked to have excluded,
+// same as credit card payments.
+function _isPlaidTransferCategory(pfc, legacyCat) {
+if(pfc && pfc.primary) {
+var primary = String(pfc.primary).toUpperCase();
+if(primary === 'TRANSFER_IN' || primary === 'TRANSFER_OUT') return true;
+}
+if(legacyCat && legacyCat.length && String(legacyCat[0]).toLowerCase() === 'transfer') return true;
+return false;
+}
+// Real-world observed descriptor for an internal transfer when neither
+// category signal is present — "Online Banking transfer from/to SAV 1920
+// Confirmation# ...".
+var _PLAID_TRANSFER_NAME_RE = /\bonline\s+banking\s+transfer\b|\binternal\s+transfer\b/i;
 // Plaid's legacy `category` array is deprecated and comes back null/absent
 // on most modern transactions — real-world testing showed a genuine credit
 // card bill payment sail right through classification with category:null.
@@ -251,6 +273,8 @@ if(detailed.indexOf('CREDIT_CARD_PAYMENT') !== -1) return true;
 }
 if(_isPlaidCategoryPayment(ptx.category)) return true;
 if(_looksLikeCardPaymentDescriptor(ptx.name)) return true;
+if(_isPlaidTransferCategory(pfc, ptx.category)) return true;
+if(_PLAID_TRANSFER_NAME_RE.test(ptx.name || '')) return true;
 return _PLAID_PAYMENT_NAME_RE.test(ptx.name || '');
 }
 function _normalizePlaidTx(plaidTxs, acctTypeById) {

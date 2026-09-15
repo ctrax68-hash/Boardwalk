@@ -1359,8 +1359,15 @@ function delTxFromDB(id){dbDel('transactions',id);lsSave();}
 // reclassifies the specific pattern this bug produced. Narrowly scoped to
 // known card-payment phrasing (not a bare "payment" match) so a real
 // housing expense that happens to mention "payment" is never touched.
-var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v4';
+var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v5';
 var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
+// Same idea as a card payment: money moving between the household's own
+// linked accounts (e.g. checking <-> savings) isn't real income or
+// spending. Plaid classifies these with its own TRANSFER_IN/TRANSFER_OUT
+// category (applied in plaid.js going forward), but a transaction already
+// saved before that fix only has this name to go on. Mirrors
+// _PLAID_TRANSFER_NAME_RE in plaid.js.
+var _PLAID_TRANSFER_NAME_RE = /\bonline\s+banking\s+transfer\b|\binternal\s+transfer\b/i;
 // The checking-account side of a card payment carries the originating
 // bank's raw NACHA/ACH descriptor instead of the issuer's "Payment Thank
 // You" line — e.g. "CHASE CREDIT CRD DES:EPAY ID:... INDN:... WEB" or
@@ -1384,11 +1391,16 @@ if(!t || typeof t.id !== 'string' || t.id.indexOf('plaid_') !== 0) return;
 // v1 only caught the credit-card leg (category was miscategorized as
 // Housing). v2 dropped the category requirement to also catch the
 // depository leg when it used the "Payment Thank You" wording. v3 added
-// the "CREDIT CRD ... EPAY" raw ACH descriptor pattern; v4 adds the
+// the "CREDIT CRD ... EPAY" raw ACH descriptor pattern; v4 added the
 // "CC PYMT"/"CC PMT" shorthand variant seen from other originating banks.
-if(t.type !== 'expense') return;
+// v5 adds self-transfers between the household's own accounts — unlike a
+// card payment, a transfer shows up as type:'income' on one side (money
+// arriving from the other account) as well as type:'expense', so both
+// need checking here.
 var name = t.merchantRaw || t.merchant || t.merchantNorm || '';
-if(!_PLAID_PAYMENT_NAME_RE.test(name) && !_looksLikeCardPaymentDescriptor(name)) return;
+var isCardPayment = t.type === 'expense' && (_PLAID_PAYMENT_NAME_RE.test(name) || _looksLikeCardPaymentDescriptor(name));
+var isTransfer = (t.type === 'expense' || t.type === 'income') && _PLAID_TRANSFER_NAME_RE.test(name);
+if(!isCardPayment && !isTransfer) return;
 t.type = 'payment';
 t.category = 'Other';
 t._updated_at = new Date().toISOString();

@@ -61,6 +61,20 @@ async function run(baseUrl) {
               // shorthand for the same kind of payment — "CC PYMT" instead
               // of "CREDIT CRD ... EPAY".
               { transaction_id: 'ptx_cc_pymt', account_id: 'acc_checking_1', amount: 573, date: '2026-08-18', name: 'Synchrony Bank DES:CC PYMT ID:XXXXXXXXXX31688 INDN:COLE TRACHSEL CO ID:XXXXX94001 WEB', category: null, personal_finance_category: null, pending: false },
+              // Self-transfer between the household's own accounts, via
+              // Plaid's modern TRANSFER_IN taxonomy — money arriving from
+              // the household's own savings account, sign-heuristic alone
+              // would call this real income.
+              { transaction_id: 'ptx_transfer_pfc', account_id: 'acc_checking_1', amount: -250, date: '2026-09-09', name: 'Online Banking transfer from SAV 1920 Confirmation# XXXXX12643', category: null, personal_finance_category: { primary: 'TRANSFER_IN', detailed: 'TRANSFER_IN_ACCOUNT_TRANSFER' }, pending: false },
+              // Real-world case: legacy category top-level 'Transfer' (no
+              // personal_finance_category at all) — this is the exact shape
+              // already sitting in production for this household.
+              { transaction_id: 'ptx_transfer_legacy', account_id: 'acc_checking_1', amount: 2000, date: '2026-07-09', name: 'Online Banking transfer to SAV 1920 Confirmation# XXXXX96432', category: ['Transfer', 'Internal Account Transfer'], personal_finance_category: null, pending: false },
+              // 🔍 False-positive guard: a real transfer of money to
+              // someone ELSE (not the household's own account) has no
+              // TRANSFER_IN/OUT category and doesn't match the narrow
+              // "online banking transfer" wording — must stay real spending.
+              { transaction_id: 'ptx_wire_out', account_id: 'acc_checking_1', amount: 800, date: '2026-09-10', name: 'Wire Transfer to John Doe', category: null, personal_finance_category: null, pending: false },
             ],
             modified: [], removed: [],
             items: [{ item_id: 'item_class_test', institution_name: 'Chase', accounts: [], next_cursor: 'cur1' }],
@@ -81,6 +95,9 @@ async function run(baseUrl) {
         achEpay: byId['plaid_ptx_ach_epay'] ? { type: byId['plaid_ptx_ach_epay'].type, category: byId['plaid_ptx_ach_epay'].category } : null,
         utilityEpay: byId['plaid_ptx_utility_epay'] ? { type: byId['plaid_ptx_utility_epay'].type, category: byId['plaid_ptx_utility_epay'].category } : null,
         ccPymt: byId['plaid_ptx_cc_pymt'] ? { type: byId['plaid_ptx_cc_pymt'].type, category: byId['plaid_ptx_cc_pymt'].category } : null,
+        transferPfc: byId['plaid_ptx_transfer_pfc'] ? { type: byId['plaid_ptx_transfer_pfc'].type, category: byId['plaid_ptx_transfer_pfc'].category } : null,
+        transferLegacy: byId['plaid_ptx_transfer_legacy'] ? { type: byId['plaid_ptx_transfer_legacy'].type, category: byId['plaid_ptx_transfer_legacy'].category } : null,
+        wireOut: byId['plaid_ptx_wire_out'] ? { type: byId['plaid_ptx_wire_out'].type, category: byId['plaid_ptx_wire_out'].category } : null,
       };
     });
     check('Payment-category transaction with negative amount classifies as type:payment', classificationResult.neg && classificationResult.neg.type === 'payment', classificationResult.neg);
@@ -92,11 +109,14 @@ async function run(baseUrl) {
     check('🔍 Raw NACHA/ACH "CREDIT CRD DES:EPAY" descriptor is recognized as a card payment', classificationResult.achEpay && classificationResult.achEpay.type === 'payment', classificationResult.achEpay);
     check('🔍 A real ACH-paid utility bill (also has DES:EPAY, but no "credit card") stays a real expense', classificationResult.utilityEpay && classificationResult.utilityEpay.type === 'expense', classificationResult.utilityEpay);
     check('🔍 "DES:CC PYMT" shorthand (a different originating bank\'s wording) is recognized as a card payment', classificationResult.ccPymt && classificationResult.ccPymt.type === 'payment', classificationResult.ccPymt);
+    check('🔍 A self-transfer via Plaid\'s TRANSFER_IN category is classified as type:payment, not income', classificationResult.transferPfc && classificationResult.transferPfc.type === 'payment' && classificationResult.transferPfc.category === 'Other', classificationResult.transferPfc);
+    check('🔍 A self-transfer via the legacy \'Transfer\' category is classified as type:payment, not expense', classificationResult.transferLegacy && classificationResult.transferLegacy.type === 'payment' && classificationResult.transferLegacy.category === 'Other', classificationResult.transferLegacy);
+    check('🔍 A wire transfer to someone else (not a self-transfer) stays real spending', classificationResult.wireOut && classificationResult.wireOut.type === 'expense', classificationResult.wireOut);
 
     // One-time repair: existing bad records (saved before this fix, with
     // the bug's exact output shape) should get corrected in place.
     const repairResult = await page.evaluate(() => {
-      localStorage.removeItem('kevt_plaid_payment_repair_done_v4');
+      localStorage.removeItem('kevt_plaid_payment_repair_done_v5');
       AppState.transactions = [
         { id: 'plaid_bad1', type: 'expense', category: 'Housing', amount: 2000, date: '2026-07-07', merchantRaw: 'Payment Thank You-Mobile', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
         { id: 'plaid_bad2', type: 'expense', category: 'Housing', amount: 1900, date: '2026-07-07', merchantRaw: 'PAYMENT THANK YOU - WEB', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
@@ -119,6 +139,14 @@ async function run(baseUrl) {
         { id: 'manual_1', type: 'expense', category: 'Housing', amount: 300, date: '2026-07-03', merchantRaw: 'Payment Thank You (manual note)', _updated_at: '2026-07-03T00:00:00.000Z', _deleted: false },
         // 🔍 Should NOT be touched: real ACH-paid utility bill, not a card payment.
         { id: 'plaid_utility', type: 'expense', category: 'Other', amount: 145, date: '2026-09-09', merchantRaw: 'PECO ENERGY DES:EPAYMENT ID:XXXXX12345 INDN:COLE A TRACHSEL WEB', _updated_at: '2026-09-09T00:00:00.000Z', _deleted: false },
+        // 🔍 The exact real-world transactions v5 targets — this household
+        // had multiple months of "Online Banking transfer" already synced
+        // as real income/expense. Transfers land on BOTH sides (unlike a
+        // card payment), so this checks both.
+        { id: 'plaid_xfer_in', type: 'income', category: 'Investments & Tax Accruals', amount: 250, date: '2026-09-09', merchantRaw: 'Online Banking transfer from SAV 1920 Confirmation# XXXXX12643', _updated_at: '2026-09-09T00:00:00.000Z', _deleted: false },
+        { id: 'plaid_xfer_out', type: 'expense', category: 'Investments & Tax Accruals', amount: 2000, date: '2026-07-09', merchantRaw: 'Online Banking transfer to SAV 1920 Confirmation# XXXXX96432', _updated_at: '2026-07-09T00:00:00.000Z', _deleted: false },
+        // Should NOT be touched: real payroll deposit, not a self-transfer.
+        { id: 'plaid_paycheck', type: 'income', category: 'Income', amount: 2169.67, date: '2026-08-28', merchantRaw: 'PROTIVITI INC. DES:EARNINGS ID:XXXXX8672205 INDN:COLE TRACHSEL', _updated_at: '2026-08-28T00:00:00.000Z', _deleted: false },
       ];
       var fixedCount = repairMisclassifiedPlaidPayments();
       var byId = {};
@@ -130,18 +158,24 @@ async function run(baseUrl) {
         bad3: { type: byId.plaid_bad3.type, category: byId.plaid_bad3.category },
         bad4: { type: byId.plaid_bad4.type, category: byId.plaid_bad4.category },
         bad5: { type: byId.plaid_bad5.type, category: byId.plaid_bad5.category },
+        xferIn: { type: byId.plaid_xfer_in.type, category: byId.plaid_xfer_in.category },
+        xferOut: { type: byId.plaid_xfer_out.type, category: byId.plaid_xfer_out.category },
+        paycheck: { type: byId.plaid_paycheck.type, category: byId.plaid_paycheck.category },
         realRent: { type: byId.plaid_real_rent.type, category: byId.plaid_real_rent.category },
         manual: { type: byId.manual_1.type, category: byId.manual_1.category },
         utility: { type: byId.plaid_utility.type, category: byId.plaid_utility.category },
-        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v4'),
+        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v5'),
       };
     });
-    check('Repair fixes exactly the 5 miscategorized Plaid card payments', repairResult.fixedCount === 5, repairResult.fixedCount);
+    check('Repair fixes exactly the 7 miscategorized Plaid transactions', repairResult.fixedCount === 7, repairResult.fixedCount);
     check('Bad transaction 1 reclassified to type:payment, category:Other', repairResult.bad1.type === 'payment' && repairResult.bad1.category === 'Other', repairResult.bad1);
     check('Bad transaction 2 reclassified to type:payment, category:Other', repairResult.bad2.type === 'payment' && repairResult.bad2.category === 'Other', repairResult.bad2);
     check('🔍 Bad transaction 3 (depository leg, "Payment Thank You" wording, category was already Other) is fixed', repairResult.bad3.type === 'payment' && repairResult.bad3.category === 'Other', repairResult.bad3);
     check('🔍 Bad transaction 4 (real-world raw ACH "CREDIT CRD DES:EPAY" descriptor) is now also fixed by v3', repairResult.bad4.type === 'payment' && repairResult.bad4.category === 'Other', repairResult.bad4);
     check('🔍 Bad transaction 5 (real-world "DES:CC PYMT" shorthand) is now also fixed by v4', repairResult.bad5.type === 'payment' && repairResult.bad5.category === 'Other', repairResult.bad5);
+    check('🔍 Incoming self-transfer (type was income) reclassified to type:payment, category:Other by v5', repairResult.xferIn.type === 'payment' && repairResult.xferIn.category === 'Other', repairResult.xferIn);
+    check('🔍 Outgoing self-transfer (type was expense) reclassified to type:payment, category:Other by v5', repairResult.xferOut.type === 'payment' && repairResult.xferOut.category === 'Other', repairResult.xferOut);
+    check('🔍 A real payroll deposit is NOT touched (false-positive guard on the income side)', repairResult.paycheck.type === 'income' && repairResult.paycheck.category === 'Income', repairResult.paycheck);
     check('🔍 Real Plaid-sourced rent expense is NOT touched (false-positive guard)', repairResult.realRent.type === 'expense' && repairResult.realRent.category === 'Housing', repairResult.realRent);
     check('🔍 Non-Plaid (manual) transaction is NOT touched even with matching name', repairResult.manual.type === 'expense' && repairResult.manual.category === 'Housing', repairResult.manual);
     check('🔍 Real ACH-paid utility bill is NOT touched (has DES:EPAY but not a credit card)', repairResult.utility.type === 'expense' && repairResult.utility.category === 'Other', repairResult.utility);
