@@ -81,6 +81,12 @@ async function run(baseUrl) {
               // TRANSFER_IN/OUT category and doesn't match the narrow
               // "online banking transfer" wording — must stay real spending.
               { transaction_id: 'ptx_wire_out', account_id: 'acc_checking_1', amount: 800, date: '2026-09-10', name: 'Wire Transfer to John Doe', category: null, personal_finance_category: null, pending: false },
+              // 🔍 Real-world case: Plaid returned a mass of degenerate
+              // placeholder rows (amount 0, generic name) during a large
+              // first-time historical sync, before enrichment finished —
+              // these landed in production as fake $0 "Other" expenses.
+              // Must be dropped entirely, not saved as a transaction.
+              { transaction_id: 'ptx_zero_placeholder', account_id: 'acc_checking_1', amount: 0, date: '2026-09-15', name: 'Other', category: null, personal_finance_category: null, pending: false },
             ],
             modified: [], removed: [],
             items: [{ item_id: 'item_class_test', institution_name: 'Chase', accounts: [], next_cursor: 'cur1' }],
@@ -106,6 +112,7 @@ async function run(baseUrl) {
         wireOut: byId['plaid_ptx_wire_out'] ? { type: byId['plaid_ptx_wire_out'].type, category: byId['plaid_ptx_wire_out'].category } : null,
         boaFromSav: byId['plaid_ptx_boa_from_sav'] ? { type: byId['plaid_ptx_boa_from_sav'].type, category: byId['plaid_ptx_boa_from_sav'].category } : null,
         boaToCrd: byId['plaid_ptx_boa_to_crd'] ? { type: byId['plaid_ptx_boa_to_crd'].type, category: byId['plaid_ptx_boa_to_crd'].category } : null,
+        zeroPlaceholderPresent: !!byId['plaid_ptx_zero_placeholder'],
       };
     });
     check('Payment-category transaction with negative amount classifies as type:payment', classificationResult.neg && classificationResult.neg.type === 'payment', classificationResult.neg);
@@ -122,6 +129,7 @@ async function run(baseUrl) {
     check('🔍 A wire transfer to someone else (not a self-transfer) stays real spending', classificationResult.wireOut && classificationResult.wireOut.type === 'expense', classificationResult.wireOut);
     check('🔍 Bank of America "PAYMENT FROM SAV ####" is recognized as a card payment', classificationResult.boaFromSav && classificationResult.boaFromSav.type === 'payment', classificationResult.boaFromSav);
     check('🔍 Bank of America "Mobile Banking payment to CRD ####" is recognized as a card payment', classificationResult.boaToCrd && classificationResult.boaToCrd.type === 'payment', classificationResult.boaToCrd);
+    check('🔍 A degenerate $0 placeholder transaction (Plaid pre-enrichment quirk) is dropped, not saved', classificationResult.zeroPlaceholderPresent === false, classificationResult);
 
     // One-time repair: existing bad records (saved before this fix, with
     // the bug's exact output shape) should get corrected in place.

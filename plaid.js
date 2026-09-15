@@ -286,7 +286,14 @@ return _PLAID_PAYMENT_NAME_RE.test(ptx.name || '');
 }
 function _normalizePlaidTx(plaidTxs, acctTypeById) {
 acctTypeById = acctTypeById || {};
-return (plaidTxs||[]).map(function(ptx) {
+// Plaid occasionally returns degenerate placeholder rows (amount 0, no
+// real merchant name) during a large first-time/historical sync, before
+// enrichment finishes. Mirrors the same $0 guard the CSV import path
+// already has (skip meaningless zero-amount rows) rather than letting
+// them through as fake "Other" expenses.
+return (plaidTxs||[]).filter(function(ptx) {
+return !!ptx.amount && !isNaN(ptx.amount);
+}).map(function(ptx) {
 var merchantRaw = ptx.name || 'Unknown';
 // Plaid sign convention: negative amount = money coming into the account.
 // On a depository account that's a real deposit (income). On a credit
