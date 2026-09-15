@@ -131,6 +131,51 @@ async function run(baseUrl) {
     check('Unlink revoke request is scoped to the correct household/item', unlinkResult.calledBody
       && unlinkResult.calledBody.household_id === 'hh_seed' && unlinkResult.calledBody.item_id === 'item_seed_1', unlinkResult);
     check('Bank removed locally after successful server-side revoke', unlinkResult.afterCount === unlinkResult.priorCount - 1, unlinkResult);
+
+    // 🔍 Regression: autoSyncOnLoad() (called directly from the boot
+    // sequence) and the manual Sync button's click handler both called a
+    // bare `sync()` — no such global function exists (the real one is
+    // PlaidLinkManager.sync, private to its own closure in plaid.js) — so
+    // this threw "Can't find variable: sync" immediately, was caught by
+    // the boot's outer try/catch, and toasted as "Render error:
+    // Can't find variable: sync", silently aborting whatever ran after it
+    // in that same try block. Re-link a bank (the previous test unlinked
+    // it) and confirm autoSyncOnLoad() actually reaches the network
+    // instead of throwing.
+    const autoSyncResult = await page.evaluate(async () => {
+      PlaidLinkManager.load(); // no banks now; seed one directly via internal state isn't exposed, so re-seed storage + reload
+      localStorage.setItem('kevt_plaid_multi', JSON.stringify([{
+        id: 'bank_resync', item_id: 'item_resync',
+        institution: { name: 'Chase', logo: null },
+        accounts: [{ account_id: 'acc1', name: 'Checking', type: 'depository', subtype: 'checking', mask: '4321', balances: { current: 100 } }],
+        lastSync: null,
+      }]));
+      PlaidLinkManager.load();
+      window._v2Session = { access_token: 'fake' };
+      window._v2Household = { id: 'hh_seed' };
+      AppState.lastSync = null;
+      AppState.lastAccountSync = null;
+      var origFetch = window.fetch;
+      var syncRequestMade = false;
+      var threw = null;
+      window.fetch = function (url, opts) {
+        if (String(url).indexOf('sync-plaid-transactions') !== -1) {
+          syncRequestMade = true;
+          return Promise.resolve({ json: () => Promise.resolve({ added: [], modified: [], removed: [], items: [] }) });
+        }
+        return origFetch(url, opts);
+      };
+      try {
+        autoSyncOnLoad(0); // minIntervalMs:0 so the "too soon" guard never skips it
+      } catch (e) {
+        threw = e.message;
+      }
+      await new Promise(r => setTimeout(r, 500));
+      window.fetch = origFetch;
+      return { threw: threw, syncRequestMade: syncRequestMade };
+    });
+    check('🔍 autoSyncOnLoad() does not throw "Can\'t find variable: sync"', autoSyncResult.threw === null, autoSyncResult);
+    check('🔍 autoSyncOnLoad() actually reaches the network (calls PlaidLinkManager.sync, not a nonexistent bare sync())', autoSyncResult.syncRequestMade === true, autoSyncResult);
   } finally {
     await browser.close();
   }

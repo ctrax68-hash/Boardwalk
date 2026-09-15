@@ -346,7 +346,7 @@ if(lastSync) {
 var msSinceLast = Date.now() - new Date(lastSync).getTime();
 if(msSinceLast < interval) return; // too soon — skip
 }
-sync().catch(function(e) {
+PlaidLinkManager.sync().catch(function(e) {
 recordSyncError(e, 'autoSyncOnLoad');
 });
 }
@@ -360,7 +360,7 @@ if(AppState.syncStatus === 'syncing') {
 toast('&#128257; Sync already in progress...');
 return;
 }
-sync().then(function(result) {
+PlaidLinkManager.sync().then(function(result) {
 if(typeof _renderConnectedUI === 'function') _renderConnectedUI();
 }).catch(function(e) {
 toast('&#9888; Sync failed: ' + (e && e.message || 'unknown error'));
