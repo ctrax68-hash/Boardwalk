@@ -224,6 +224,18 @@ return (plaidCats[0]||'').toLowerCase() === 'payment';
 // of a bill payment (the depository-account debit AND the credit-account
 // credit), not just the credit side.
 var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
+// The card issuer's own "Payment Thank You" line only appears on the
+// credit-account side. The originating bank's (checking-account) side of
+// the SAME payment instead carries a raw NACHA/ACH descriptor — e.g.
+// "CHASE CREDIT CRD DES:EPAY ID:... INDN:... WEB" — completely different
+// wording, so the pattern above never matched it. "DES:EPAY" alone is too
+// generic (it also appears on ACH-paid utility/loan bills that ARE real
+// spending), but paired with "CREDIT CRD"/"CREDIT CARD" in the same
+// descriptor it specifically means an electronic credit-card payment.
+function _looksLikeCardPaymentDescriptor(name) {
+var n = (name || '').toUpperCase();
+return /CREDIT\s*(?:CRD|CARD)/.test(n) && /E-?PAY|AUTO\s*-?\s*PAY/.test(n);
+}
 function _isPlaidPaymentTx(ptx) {
 var pfc = ptx.personal_finance_category;
 if(pfc) {
@@ -233,6 +245,7 @@ if(primary === 'LOAN_PAYMENTS') return true;
 if(detailed.indexOf('CREDIT_CARD_PAYMENT') !== -1) return true;
 }
 if(_isPlaidCategoryPayment(ptx.category)) return true;
+if(_looksLikeCardPaymentDescriptor(ptx.name)) return true;
 return _PLAID_PAYMENT_NAME_RE.test(ptx.name || '');
 }
 function _normalizePlaidTx(plaidTxs, acctTypeById) {
