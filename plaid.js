@@ -214,6 +214,27 @@ function _isPlaidCategoryPayment(plaidCats) {
 if(!plaidCats || !plaidCats.length) return false;
 return (plaidCats[0]||'').toLowerCase() === 'payment';
 }
+// Plaid's legacy `category` array is deprecated and comes back null/absent
+// on most modern transactions — real-world testing showed a genuine credit
+// card bill payment sail right through classification with category:null.
+// personal_finance_category (the current taxonomy) is the primary signal
+// now; the merchant-name pattern is a robust last-resort fallback that
+// doesn't depend on Plaid's category shape at all, since Plaid's own
+// auto-generated "Payment Thank You" description is present on both legs
+// of a bill payment (the depository-account debit AND the credit-account
+// credit), not just the credit side.
+var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
+function _isPlaidPaymentTx(ptx) {
+var pfc = ptx.personal_finance_category;
+if(pfc) {
+var primary  = String(pfc.primary||'').toUpperCase();
+var detailed = String(pfc.detailed||'').toUpperCase();
+if(primary === 'LOAN_PAYMENTS') return true;
+if(detailed.indexOf('CREDIT_CARD_PAYMENT') !== -1) return true;
+}
+if(_isPlaidCategoryPayment(ptx.category)) return true;
+return _PLAID_PAYMENT_NAME_RE.test(ptx.name || '');
+}
 function _normalizePlaidTx(plaidTxs, acctTypeById) {
 acctTypeById = acctTypeById || {};
 return (plaidTxs||[]).map(function(ptx) {
@@ -233,8 +254,11 @@ var txType = isCredit
 // sign-classified as 'expense' and got counted as new household
 // spending. Plaid's own category is a stronger, independent signal for
 // "this is a balance payment, not a purchase" — let it win when the two
-// disagree, on a credit account.
-if(isCredit && _isPlaidCategoryPayment(ptx.category)) txType = 'payment';
+// disagree. Applied regardless of which account this leg is on: a bill
+// payment shows up on BOTH the depository account (a debit, sign-heuristic
+// would call it 'expense') and the credit account (a credit) — the
+// depository leg was still slipping through as real spending.
+if(_isPlaidPaymentTx(ptx)) txType = 'payment';
 return normalizeTransactionShape({
 id:          'plaid_' + ptx.transaction_id,
 type:        txType,

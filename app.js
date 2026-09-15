@@ -1359,7 +1359,7 @@ function delTxFromDB(id){dbDel('transactions',id);lsSave();}
 // reclassifies the specific pattern this bug produced. Narrowly scoped to
 // known card-payment phrasing (not a bare "payment" match) so a real
 // housing expense that happens to mention "payment" is never touched.
-var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v1';
+var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v2';
 var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
 function repairMisclassifiedPlaidPayments() {
 try {
@@ -1367,7 +1367,14 @@ if(safeGet(PLAID_PAYMENT_REPAIR_KEY, '') === '1') return 0;
 var fixed = 0;
 (AppState.transactions||[]).forEach(function(t) {
 if(!t || typeof t.id !== 'string' || t.id.indexOf('plaid_') !== 0) return;
-if(t.type !== 'expense' || t.category !== 'Housing') return;
+// v1 of this repair only caught the credit-card leg of a bill payment,
+// which had been miscategorized as Housing. The depository-account leg
+// (the debit out of checking) was never touched by the old sign+account
+// heuristic and slips through with whatever category the sync gave it
+// (commonly 'Other', since Plaid's legacy category field is usually
+// null on modern transactions) — so v2 matches on type+name alone,
+// regardless of category.
+if(t.type !== 'expense') return;
 var name = t.merchantRaw || t.merchant || t.merchantNorm || '';
 if(!_PLAID_PAYMENT_NAME_RE.test(name)) return;
 t.type = 'payment';
