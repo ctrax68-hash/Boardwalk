@@ -1359,17 +1359,21 @@ function delTxFromDB(id){dbDel('transactions',id);lsSave();}
 // reclassifies the specific pattern this bug produced. Narrowly scoped to
 // known card-payment phrasing (not a bare "payment" match) so a real
 // housing expense that happens to mention "payment" is never touched.
-var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v3';
+var PLAID_PAYMENT_REPAIR_KEY = 'kevt_plaid_payment_repair_done_v4';
 var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
 // The checking-account side of a card payment carries the originating
 // bank's raw NACHA/ACH descriptor instead of the issuer's "Payment Thank
-// You" line — e.g. "CHASE CREDIT CRD DES:EPAY ID:... INDN:... WEB".
-// "DES:EPAY" alone also shows up on real ACH-paid bills, but paired with
-// "CREDIT CRD"/"CREDIT CARD" it specifically means an electronic
-// credit-card payment. Mirrors _looksLikeCardPaymentDescriptor in plaid.js.
+// You" line — e.g. "CHASE CREDIT CRD DES:EPAY ID:... INDN:... WEB" or
+// "Synchrony Bank DES:CC PYMT ID:...". "DES:EPAY" alone also shows up on
+// real ACH-paid bills, but paired with "CREDIT CRD"/"CREDIT CARD" (or the
+// unambiguous "CC PYMT"/"CC PMT" shorthand) it specifically means an
+// electronic credit-card payment. Mirrors _looksLikeCardPaymentDescriptor
+// in plaid.js.
 function _looksLikeCardPaymentDescriptor(name) {
 var n = (name || '').toUpperCase();
-return /CREDIT\s*(?:CRD|CARD)/.test(n) && /E-?PAY|AUTO\s*-?\s*PAY/.test(n);
+if(/CREDIT\s*(?:CRD|CARD)/.test(n) && /E-?PAY|AUTO\s*-?\s*PAY/.test(n)) return true;
+if(/\bCC\s*(?:PYMT|PMT|PAYMENT)\b/.test(n)) return true;
+return false;
 }
 function repairMisclassifiedPlaidPayments() {
 try {
@@ -1379,9 +1383,9 @@ var fixed = 0;
 if(!t || typeof t.id !== 'string' || t.id.indexOf('plaid_') !== 0) return;
 // v1 only caught the credit-card leg (category was miscategorized as
 // Housing). v2 dropped the category requirement to also catch the
-// depository leg when it used the "Payment Thank You" wording. v3 adds
-// the raw ACH descriptor pattern for when the depository leg uses the
-// originating bank's own wording instead.
+// depository leg when it used the "Payment Thank You" wording. v3 added
+// the "CREDIT CRD ... EPAY" raw ACH descriptor pattern; v4 adds the
+// "CC PYMT"/"CC PMT" shorthand variant seen from other originating banks.
 if(t.type !== 'expense') return;
 var name = t.merchantRaw || t.merchant || t.merchantNorm || '';
 if(!_PLAID_PAYMENT_NAME_RE.test(name) && !_looksLikeCardPaymentDescriptor(name)) return;

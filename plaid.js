@@ -234,7 +234,12 @@ var _PLAID_PAYMENT_NAME_RE = /payment[\s-]*thank[\s-]*you|^auto\s*-?\s*pay\b/i;
 // descriptor it specifically means an electronic credit-card payment.
 function _looksLikeCardPaymentDescriptor(name) {
 var n = (name || '').toUpperCase();
-return /CREDIT\s*(?:CRD|CARD)/.test(n) && /E-?PAY|AUTO\s*-?\s*PAY/.test(n);
+if(/CREDIT\s*(?:CRD|CARD)/.test(n) && /E-?PAY|AUTO\s*-?\s*PAY/.test(n)) return true;
+// Another observed real-world variant: "Synchrony Bank DES:CC PYMT ID:...
+// WEB" — "CC" abbreviating "Credit Card" right before "PYMT"/"PMT" is
+// unambiguous ACH shorthand, unlikely to appear in any non-card context.
+if(/\bCC\s*(?:PYMT|PMT|PAYMENT)\b/.test(n)) return true;
+return false;
 }
 function _isPlaidPaymentTx(ptx) {
 var pfc = ptx.personal_finance_category;

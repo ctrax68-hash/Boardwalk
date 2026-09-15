@@ -57,6 +57,10 @@ async function run(baseUrl) {
               // carries "DES:EPAY" but has nothing to do with a credit
               // card — must stay a real expense.
               { transaction_id: 'ptx_utility_epay', account_id: 'acc_checking_1', amount: 145.00, date: '2026-09-09', name: 'PECO ENERGY DES:EPAYMENT ID:XXXXX12345 INDN:COLE A TRACHSEL WEB', category: null, personal_finance_category: null, pending: false },
+              // Real-world case: a different originating bank's ACH
+              // shorthand for the same kind of payment — "CC PYMT" instead
+              // of "CREDIT CRD ... EPAY".
+              { transaction_id: 'ptx_cc_pymt', account_id: 'acc_checking_1', amount: 573, date: '2026-08-18', name: 'Synchrony Bank DES:CC PYMT ID:XXXXXXXXXX31688 INDN:COLE TRACHSEL CO ID:XXXXX94001 WEB', category: null, personal_finance_category: null, pending: false },
             ],
             modified: [], removed: [],
             items: [{ item_id: 'item_class_test', institution_name: 'Chase', accounts: [], next_cursor: 'cur1' }],
@@ -76,6 +80,7 @@ async function run(baseUrl) {
         pfc: byId['plaid_ptx_pfc'] ? { type: byId['plaid_ptx_pfc'].type, category: byId['plaid_ptx_pfc'].category } : null,
         achEpay: byId['plaid_ptx_ach_epay'] ? { type: byId['plaid_ptx_ach_epay'].type, category: byId['plaid_ptx_ach_epay'].category } : null,
         utilityEpay: byId['plaid_ptx_utility_epay'] ? { type: byId['plaid_ptx_utility_epay'].type, category: byId['plaid_ptx_utility_epay'].category } : null,
+        ccPymt: byId['plaid_ptx_cc_pymt'] ? { type: byId['plaid_ptx_cc_pymt'].type, category: byId['plaid_ptx_cc_pymt'].category } : null,
       };
     });
     check('Payment-category transaction with negative amount classifies as type:payment', classificationResult.neg && classificationResult.neg.type === 'payment', classificationResult.neg);
@@ -86,11 +91,12 @@ async function run(baseUrl) {
     check('🔍 personal_finance_category (modern taxonomy, no legacy category) is recognized as a payment', classificationResult.pfc && classificationResult.pfc.type === 'payment', classificationResult.pfc);
     check('🔍 Raw NACHA/ACH "CREDIT CRD DES:EPAY" descriptor is recognized as a card payment', classificationResult.achEpay && classificationResult.achEpay.type === 'payment', classificationResult.achEpay);
     check('🔍 A real ACH-paid utility bill (also has DES:EPAY, but no "credit card") stays a real expense', classificationResult.utilityEpay && classificationResult.utilityEpay.type === 'expense', classificationResult.utilityEpay);
+    check('🔍 "DES:CC PYMT" shorthand (a different originating bank\'s wording) is recognized as a card payment', classificationResult.ccPymt && classificationResult.ccPymt.type === 'payment', classificationResult.ccPymt);
 
     // One-time repair: existing bad records (saved before this fix, with
     // the bug's exact output shape) should get corrected in place.
     const repairResult = await page.evaluate(() => {
-      localStorage.removeItem('kevt_plaid_payment_repair_done_v3');
+      localStorage.removeItem('kevt_plaid_payment_repair_done_v4');
       AppState.transactions = [
         { id: 'plaid_bad1', type: 'expense', category: 'Housing', amount: 2000, date: '2026-07-07', merchantRaw: 'Payment Thank You-Mobile', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
         { id: 'plaid_bad2', type: 'expense', category: 'Housing', amount: 1900, date: '2026-07-07', merchantRaw: 'PAYMENT THANK YOU - WEB', _updated_at: '2026-07-07T00:00:00.000Z', _deleted: false },
@@ -103,6 +109,10 @@ async function run(baseUrl) {
         // checking-account side, worded as a raw ACH descriptor, still
         // sitting in the household's data as type:expense after v2 ran.
         { id: 'plaid_bad4', type: 'expense', category: 'Other', amount: 1400, date: '2026-09-08', merchantRaw: 'CHASE CREDIT CRD DES:EPAY ID:XXXXX85264 INDN:COLE A TRACHSEL CO ID:XXXXX39224 WEB', _updated_at: '2026-09-08T00:00:00.000Z', _deleted: false },
+        // 🔍 The exact real-world transaction v4 targets: a different
+        // originating bank's "CC PYMT" shorthand, still sitting as
+        // type:expense after v3 ran.
+        { id: 'plaid_bad5', type: 'expense', category: 'Other', amount: 573, date: '2026-08-18', merchantRaw: 'Synchrony Bank DES:CC PYMT ID:XXXXXXXXXX31688 INDN:COLE TRACHSEL CO ID:XXXXX94001 WEB', _updated_at: '2026-08-18T00:00:00.000Z', _deleted: false },
         // Should NOT be touched: a real, legitimate housing expense that happens to be Plaid-sourced.
         { id: 'plaid_real_rent', type: 'expense', category: 'Housing', amount: 1500, date: '2026-07-01', merchantRaw: 'Landlord LLC Rent', _updated_at: '2026-07-01T00:00:00.000Z', _deleted: false },
         // Should NOT be touched: not Plaid-sourced (manually entered).
@@ -119,17 +129,19 @@ async function run(baseUrl) {
         bad2: { type: byId.plaid_bad2.type, category: byId.plaid_bad2.category },
         bad3: { type: byId.plaid_bad3.type, category: byId.plaid_bad3.category },
         bad4: { type: byId.plaid_bad4.type, category: byId.plaid_bad4.category },
+        bad5: { type: byId.plaid_bad5.type, category: byId.plaid_bad5.category },
         realRent: { type: byId.plaid_real_rent.type, category: byId.plaid_real_rent.category },
         manual: { type: byId.manual_1.type, category: byId.manual_1.category },
         utility: { type: byId.plaid_utility.type, category: byId.plaid_utility.category },
-        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v3'),
+        repairFlag: localStorage.getItem('kevt_plaid_payment_repair_done_v4'),
       };
     });
-    check('Repair fixes exactly the 4 miscategorized Plaid card payments', repairResult.fixedCount === 4, repairResult.fixedCount);
+    check('Repair fixes exactly the 5 miscategorized Plaid card payments', repairResult.fixedCount === 5, repairResult.fixedCount);
     check('Bad transaction 1 reclassified to type:payment, category:Other', repairResult.bad1.type === 'payment' && repairResult.bad1.category === 'Other', repairResult.bad1);
     check('Bad transaction 2 reclassified to type:payment, category:Other', repairResult.bad2.type === 'payment' && repairResult.bad2.category === 'Other', repairResult.bad2);
     check('🔍 Bad transaction 3 (depository leg, "Payment Thank You" wording, category was already Other) is fixed', repairResult.bad3.type === 'payment' && repairResult.bad3.category === 'Other', repairResult.bad3);
     check('🔍 Bad transaction 4 (real-world raw ACH "CREDIT CRD DES:EPAY" descriptor) is now also fixed by v3', repairResult.bad4.type === 'payment' && repairResult.bad4.category === 'Other', repairResult.bad4);
+    check('🔍 Bad transaction 5 (real-world "DES:CC PYMT" shorthand) is now also fixed by v4', repairResult.bad5.type === 'payment' && repairResult.bad5.category === 'Other', repairResult.bad5);
     check('🔍 Real Plaid-sourced rent expense is NOT touched (false-positive guard)', repairResult.realRent.type === 'expense' && repairResult.realRent.category === 'Housing', repairResult.realRent);
     check('🔍 Non-Plaid (manual) transaction is NOT touched even with matching name', repairResult.manual.type === 'expense' && repairResult.manual.category === 'Housing', repairResult.manual);
     check('🔍 Real ACH-paid utility bill is NOT touched (has DES:EPAY but not a credit card)', repairResult.utility.type === 'expense' && repairResult.utility.category === 'Other', repairResult.utility);
