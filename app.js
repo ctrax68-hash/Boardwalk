@@ -1469,7 +1469,8 @@ try{ localStorage.setItem(STARTER_TX_KEY,'true'); }catch(e){}
 function dismissStarterTemplate(){
 try{ localStorage.setItem(STARTER_KEY,'true'); }catch(e){}
 }
-function loadStarterTemplate(withTxns){
+function loadStarterTemplate(withTxns, touchTransactions){
+if(touchTransactions === undefined) touchTransactions = true;
 var now = new Date();
 var y = now.getFullYear();
 var m = now.getMonth();
@@ -1531,6 +1532,7 @@ yearlyTotal: item.amt * 12
 });
 var totalStarterIncome = incomeItems.reduce(function(s,i){return s+i.amt;},0);
 dbg('[starter] income configured: '+totalStarterIncome+'/mo');
+if(touchTransactions){
 if(withTxns){
 markStarterTxnsShown();
 var samples = [
@@ -1564,6 +1566,7 @@ dbg('[starter] '+samples.length+' sample transactions loaded (first run)');
 } else {
 AppState.transactions = [];
 dbg('[starter] transactions empty (post-clear run)');
+}
 }
 BUDGET_GROUPS.forEach(function(g){
 g.cats.forEach(function(cat){
@@ -12692,9 +12695,15 @@ function _executeReset() {
       }
     } catch(e) {}
   }
-  // Reload starter template
+  // Reload starter template — budget categories/amounts only. Must NOT
+  // touch AppState.transactions: this button's own confirm dialog promises
+  // "Your transactions will not be affected," but loadStarterTemplate's
+  // withTxns:false branch (meant for the unrelated post-clearAll() case)
+  // unconditionally wiped AppState.transactions = [], silently deleting a
+  // real household's entire transaction history — including everything
+  // synced from Plaid — the moment they reset their budget categories.
   try {
-    if (typeof loadStarterTemplate === 'function') loadStarterTemplate(false);
+    if (typeof loadStarterTemplate === 'function') loadStarterTemplate(false, false);
   } catch(e) {}
   // Re-render settings
   render(_containerId);
